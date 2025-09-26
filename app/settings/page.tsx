@@ -107,6 +107,11 @@ export default function SettingsPage() {
 
   return (
     <main style={{ padding: 24, maxWidth: 1100, lineHeight: 1.4 }}>
+      {/* Botón volver */}
+      <div style={{ marginBottom: 12 }}>
+        <a href="/" style={{ textDecoration: "underline" }}>&larr; Regresar al inicio</a>
+      </div>
+
       <h1>Ajustes · General</h1>
       <p>Define restricciones por turno y administra los salones.</p>
 
@@ -133,6 +138,15 @@ export default function SettingsPage() {
               <ShiftCard title="Vespertino" startKey="start_vespertino" durKey="duration_vespertino" breakKey="allow_breaks_vespertino" slotsKey="slots_per_day_vespertino" />
               <ShiftCard title="Sabatino"   startKey="start_sabatino"   durKey="duration_sabatino"   breakKey="allow_breaks_sabatino"  slotsKey="slots_per_day_sabatino" />
               <ShiftCard title="Dominical"  startKey="start_dominical"  durKey="duration_dominical"  breakKey="allow_breaks_dominical" slotsKey="slots_per_day_dominical" />
+            </div>
+
+            {/* Lista de restricciones no editables (legibilidad) */}
+            <div style={{ marginTop: 16, background: "#f9fafc", padding: 12, borderRadius: 8 }}>
+              <h4 style={{ margin: "0 0 8px 0" }}>Restricciones del sistema (no editables)</h4>
+              <ul style={{ margin: 0 }}>
+                <li>Clases se asignan en horarios seguidos (slots consecutivos desde la hora de inicio).</li>
+                <li>Ningún alumno puede tener dos clases a la misma hora.</li>
+              </ul>
             </div>
 
             <div style={{ marginTop: 12 }}>
