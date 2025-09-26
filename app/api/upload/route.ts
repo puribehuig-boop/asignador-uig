@@ -5,6 +5,15 @@ import { supabaseAdmin } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
 
+const normalizeHeader = (h: string) => {
+  const raw = (h ?? "").toString().replace(/\uFEFF/g, "").trim().toLowerCase();
+  const noAccent = raw.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  const key = noAccent.replace(/\s+/g, "_");
+  if (key === "shift") return "turno";
+  if (key === "turnos") return "turno";
+  return key;
+};
+
 const RowSchema = z.object({
   student_code: z.string().min(1),
   student_name: z.string().optional().nullable(),
@@ -26,7 +35,7 @@ export async function POST(req: Request) {
     }
 
     const text = await file.text();
-    const parsed = Papa.parse(text, { header: true, skipEmptyLines: true });
+    const parsed = Papa.parse(text, { header: true, skipEmptyLines: true, transformHeader: normalizeHeader });
     const rawRows = (parsed.data as any[]) ?? [];
     const rows: Row[] = [];
     let invalid = 0;
