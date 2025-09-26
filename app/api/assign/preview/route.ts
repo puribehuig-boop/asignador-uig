@@ -9,10 +9,10 @@ type Room = { id: string; code: string; capacity: number };
 type Course = { id: string; code: string; name: string | null };
 
 const SHIFT_DAYS: Record<Shift, number[]> = {
-  matutino: [1, 2, 3, 4, 5],  // L-V
+  matutino: [1, 2, 3, 4, 5],
   vespertino: [1, 2, 3, 4, 5],
-  sabatino: [6],              // Sáb
-  dominical: [7],             // Dom
+  sabatino: [6],
+  dominical: [7],
 };
 const SHIFTS: Shift[] = ["matutino", "vespertino", "sabatino", "dominical"];
 
@@ -83,7 +83,7 @@ export async function POST() {
       (students ?? []).map((s: any) => [s.id, (s.name ?? null) as string | null]),
     );
 
-    // demanda por curso (total y por turno) + elegibilidades por alumno (SET para evitar duplicados)
+    // demanda por curso (total y por turno) + elegibilidades por alumno (SET para únicos)
     const demandByCourseTotal = new Map<string, number>();
     const demandByCourseShift = new Map<string, Record<Shift, number>>();
     const eligByStudent = new Map<string, Set<string>>();
@@ -121,11 +121,8 @@ export async function POST() {
     }
 
     // ========= 3) PROGRAMACIÓN DE GRUPOS (slot-diversificado) =========
-    // demanda restante por curso/turno
     const remainingDemand = new Map<string, Record<Shift, number>>();
-    for (const [cid, per] of demandByCourseShift.entries()) {
-      remainingDemand.set(cid, { ...per });
-    }
+    for (const [cid, per] of demandByCourseShift.entries()) remainingDemand.set(cid, { ...per });
 
     const roomsByCapacity = roomsArr.slice().sort((a, b) => b.capacity - a.capacity);
     const groupIndexMap = new Map<string, number>(); // `${cid}|${shift}` -> idx
@@ -160,10 +157,7 @@ export async function POST() {
             }
           }
 
-          if (!bestCid || bestDem <= 0) {
-            // no demanda para este slot/salón -> queda vacío
-            continue;
-          }
+          if (!bestCid || bestDem <= 0) continue;
 
           const key = `${bestCid}|${shift}`;
           const nextIdx = (groupIndexMap.get(key) || 0) + 1;
@@ -198,20 +192,17 @@ export async function POST() {
       groupsByKey.set(k, arr);
     }
 
-    // capacidad restante por grupo
     const remCap = new Map<string, number>();
     for (const g of scheduledGroups) remCap.set(g.ephemeral_id, g.capacity);
 
-    const studentSchedule = new Map<string, Meeting[]>(); // agenda por alumno
-    const studentLoad = new Map<string, number>(); // materias asignadas por alumno
+    const studentSchedule = new Map<string, Meeting[]>();             // agenda por alumno
+    const studentLoad = new Map<string, number>();                    // materias asignadas por alumno
+    const assignedCoursesByStudent = new Map<string, Set<string>>();  // *** NUEVO: cursos ya tomados por alumno ***
     const proposed: { student_id: string; course_id: string; ephemeral_group_id: string }[] = [];
 
     // alumnos por turno (orden: menos elegibles primero)
     const studentsByShift: Record<Shift, string[]> = {
-      matutino: [],
-      vespertino: [],
-      sabatino: [],
-      dominical: [],
+      matutino: [], vespertino: [], sabatino: [], dominical: [],
     };
     for (const sid of Array.from(eligByStudent.keys())) {
       const sh = (studentShift.get(sid) || "matutino") as Shift;
@@ -226,9 +217,7 @@ export async function POST() {
     // slots cronológicos globales
     const slotsChrono: Array<{ shift: Shift; day: number; start: number }> = [];
     for (const sh of SHIFTS) {
-      for (const s of timeSlotsByShift[sh]) {
-        slotsChrono.push({ shift: sh, day: s.day, start: s.start });
-      }
+      for (const s of timeSlotsByShift[sh]) slotsChrono.push({ shift: sh, day: s.day, start: s.start });
     }
     slotsChrono.sort(
       (a, b) =>
@@ -242,24 +231,21 @@ export async function POST() {
       const groupsHere = (groupsByKey.get(k) || [])
         .slice()
         .sort((g1, g2) => (remCap.get(g2.ephemeral_id)! - remCap.get(g1.ephemeral_id)!));
-
       if (groupsHere.length === 0) continue;
 
       const allowBreaks = allowBreaksByShift[slot.shift];
       const studentIds = studentsByShift[slot.shift];
 
-      // recorre alumnos del turno e intenta sentarlos en ALGÚN grupo de este slot
       for (const sid of studentIds) {
-        if ((studentLoad.get(sid) || 0) >= maxCoursesPerStudent) continue;
+        const eligSet = eligByStudent.get(sid) || new Set<string>();
+        const allowedLoad = Math.min(maxCoursesPerStudent, eligSet.size); // *** NUEVO: no más que elegibles únicos ***
 
-        const eligible = eligByStudent.get(sid) || new Set<string>();
+        if ((studentLoad.get(sid) || 0) >= allowedLoad) continue;
+
         let sched = studentSchedule.get(sid) || [];
-
-        // "sin descanso": si ya tiene algo este día, solo contiguo al bloque
         const daySched = sched.filter((s) => s.day === slot.day);
         const requireContiguous = !allowBreaks && daySched.length > 0;
-        let minStart = Infinity,
-          maxEnd = -Infinity;
+        let minStart = Infinity, maxEnd = -Infinity;
         if (requireContiguous) {
           for (const s of daySched) {
             if (s.start < minStart) minStart = s.start;
@@ -267,9 +253,16 @@ export async function POST() {
           }
         }
 
+        const takenCourses = assignedCoursesByStudent.get(sid) || new Set<string>();
+
         for (const g of groupsHere) {
           if ((remCap.get(g.ephemeral_id) || 0) <= 0) continue;
-          if (!eligible.has(g.course_id)) continue;
+
+          // Debe ser elegible
+          if (!eligSet.has(g.course_id)) continue;
+
+          // *** RESTRICCIÓN NUEVA: no repetir misma materia ***
+          if (takenCourses.has(g.course_id)) continue;
 
           // misma hora exacta prohibida
           const sameHour = sched.some((s) => s.day === g.meeting.day && s.start === g.meeting.start);
@@ -285,13 +278,17 @@ export async function POST() {
             if (!contiguous) continue;
           }
 
-          // asignar
+          // Asignar
           proposed.push({ student_id: sid, course_id: g.course_id, ephemeral_group_id: g.ephemeral_id });
           remCap.set(g.ephemeral_id, (remCap.get(g.ephemeral_id) || 0) - 1);
           studentLoad.set(sid, (studentLoad.get(sid) || 0) + 1);
 
           sched = sched.concat([g.meeting]);
           studentSchedule.set(sid, sched);
+
+          // marca curso tomado por el alumno (para no repetir materia)
+          if (!assignedCoursesByStudent.has(sid)) assignedCoursesByStudent.set(sid, new Set<string>());
+          assignedCoursesByStudent.get(sid)!.add(g.course_id);
 
           // solo UNA clase por slot por alumno
           break;
@@ -302,7 +299,6 @@ export async function POST() {
     // ========= 5) SALIDAS =========
     const courseById = new Map(coursesArr.map((c) => [c.id, c]));
 
-    // grupos con métricas y campos de orden
     const groupsUsage = scheduledGroups.map((g) => {
       const used = g.capacity - (remCap.get(g.ephemeral_id) || 0);
       return {
@@ -322,7 +318,6 @@ export async function POST() {
       };
     });
 
-    // resumen por alumno
     const assignedCount = new Map<string, number>();
     for (const a of proposed) assignedCount.set(a.student_id, (assignedCount.get(a.student_id) || 0) + 1);
 
@@ -342,7 +337,6 @@ export async function POST() {
         return y.assignments - x.assignments;
       });
 
-    // detalle de asignaciones (para horarios de alumno)
     const groupById = new Map(scheduledGroups.map((g) => [g.ephemeral_id, g]));
     const assignmentsDetailed = proposed
       .map((a) => {
@@ -410,7 +404,6 @@ export async function POST() {
       scheduled_groups: groupsUsage,            // para vista "Materias" y horarios por salón
       students_overview: studentsOverview,      // para vista "Alumnos"
       assignments_detailed: assignmentsDetailed,// para horarios por alumno
-      // catálogos para typeahead
       students_catalog: (students ?? []).map((s: any) => ({
         id: s.id as string,
         name: (s.name ?? null) as string | null,
