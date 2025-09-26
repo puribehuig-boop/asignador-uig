@@ -45,6 +45,12 @@ export async function POST() {
       sabatino: Number(S.slots_per_day_sabatino ?? 4),
       dominical: Number(S.slots_per_day_dominical ?? 4),
     };
+    const allowBreaksByShift: Record<Shift, boolean> = {
+  matutino: Boolean(S.allow_breaks_matutino ?? true),
+  vespertino: Boolean(S.allow_breaks_vespertino ?? true),
+  sabatino: Boolean(S.allow_breaks_sabatino ?? true),
+  dominical: Boolean(S.allow_breaks_dominical ?? true),
+  };
     const maxCoursesPerStudent = Number(S.max_courses_per_student ?? 5);
 
     // Datos
@@ -183,50 +189,103 @@ export async function POST() {
 
     const studentsIds = Array.from(eligByStudent.keys());
 
-    for (const sid of studentsIds) {
-      const sh = (studentShift.get(sid) || "matutino") as Shift;
-      if ((studentLoad.get(sid) || 0) >= maxCoursesPerStudent) continue;
+for (const sid of studentsIds) {
+  const sh = (studentShift.get(sid) || "matutino") as Shift;
+  const allowBreaks = allowBreaksByShift[sh];
 
-      const eligibleCourses = (eligByStudent.get(sid) || [])
-        .slice()
-        .sort((a,b) => {
-          const dA = demandByCourseTotal.get(a) || 0, dB = demandByCourseTotal.get(b) || 0;
-          const cA = scheduledCapByCourse.get(a) || 0, cB = scheduledCapByCourse.get(b) || 0;
-          const rA = cA>0 ? dA/cA : Infinity, rB = cB>0 ? dB/cB : Infinity;
-          return rB - rA;
-        });
+  if ((studentLoad.get(sid) || 0) >= maxCoursesPerStudent) continue;
 
-      const sched = studentSchedule.get(sid) || [];
+  const eligibleCourses = (eligByStudent.get(sid) || [])
+    .slice()
+    .sort((a,b) => {
+      const dA = demandByCourseTotal.get(a) || 0, dB = demandByCourseTotal.get(b) || 0;
+      const cA = scheduledCapByCourse.get(a) || 0, cB = scheduledCapByCourse.get(b) || 0;
+      const rA = cA>0 ? dA/cA : Infinity, rB = cB>0 ? dB/cB : Infinity;
+      return rB - rA;
+    });
 
-      for (const cid of eligibleCourses) {
-        if ((studentLoad.get(sid) || 0) >= maxCoursesPerStudent) break;
+  // IMPORTANTE: sched debe actualizarse localmente tras cada asignacion
+  let sched = studentSchedule.get(sid) || [];
 
-        const gs = (groupsByCourse.get(cid) || [])
-          .filter(g => g.shift === sh)
-          .slice()
-          .sort((g1,g2) => ((remCap.get(g2.ephemeral_id)||0) - (remCap.get(g1.ephemeral_id)||0)));
+  for (const cid of eligibleCourses) {
+    if ((studentLoad.get(sid) || 0) >= maxCoursesPerStudent) break;
 
-        let placed = false;
-        for (const g of gs) {
-          if ((remCap.get(g.ephemeral_id) || 0) <= 0) continue;
+    // Grupos del curso en el mismo turno del alumno
+    let gs = (groupsByCourse.get(cid) || []).filter(g => g.shift === sh);
 
-          // Prohibición explícita: no dos clases a la MISMA hora exacta
-          const sameHour = sched.some(s => s.day === g.meeting.day && s.start === g.meeting.start);
-          if (sameHour) continue;
-
-          // Choque horario general
-          const hasOverlap = sched.some(s => overlap(s, g.meeting));
-          if (hasOverlap) continue;
-
-          proposed.push({ student_id: sid, course_id: cid, ephemeral_group_id: g.ephemeral_id });
-          remCap.set(g.ephemeral_id, (remCap.get(g.ephemeral_id) || 0) - 1);
-          studentLoad.set(sid, (studentLoad.get(sid) || 0) + 1);
-          studentSchedule.set(sid, sched.concat([g.meeting]));
-          placed = true; break;
-        }
-        if (!placed) unassignedByCourse.set(cid, (unassignedByCourse.get(cid) || 0) + 1);
+    // Orden: si no se permiten descansos, prioriza mas temprano; si si, prioriza capacidad
+    gs = gs.slice().sort((g1, g2) => {
+      if (!allowBreaks) {
+        return (g1.meeting.day - g2.meeting.day) || (g1.meeting.start - g2.meeting.start);
       }
+      return ((remCap.get(g2.ephemeral_id) || 0) - (remCap.get(g1.ephemeral_id) || 0));
+    });
+
+    // Si no hay descansos y ya hay algo ese dia, intenta primero slots contiguos a su bloque
+    if (!allowBreaks) {
+      const perDay: Record<number, { min: number; max: number } | undefined> = {};
+      for (const s of sched) {
+        const d = s.day;
+        perDay[d] = perDay[d]
+          ? { min: Math.min(perDay[d]!.min, s.start), max: Math.max(perDay[d]!.max, s.end) }
+          : { min: s.start, max: s.end };
+      }
+      const preferred: typeof gs = [];
+      const others: typeof gs = [];
+      for (const g of gs) {
+        const blk = perDay[g.meeting.day];
+        if (!blk) {
+          // si aun no tiene nada ese dia, considerar normal (ya estan ordenados por hora)
+          preferred.push(g);
+        } else {
+          const contiguous = (g.meeting.end === blk.min) || (g.meeting.start === blk.max);
+          (contiguous ? preferred : others).push(g);
+        }
+      }
+      gs = preferred.concat(others);
     }
+
+    let placed = false;
+    for (const g of gs) {
+      if ((remCap.get(g.ephemeral_id) || 0) <= 0) continue;
+
+      // Regla: misma hora exacta prohibida
+      const sameHour = sched.some(s => s.day === g.meeting.day && s.start === g.meeting.start);
+      if (sameHour) continue;
+
+      // Regla: no solapamiento
+      const hasOverlap = sched.some(s => overlap(s, g.meeting));
+      if (hasOverlap) continue;
+
+      // Regla: sin descanso (si aplica). Requiere contiguidad con el bloque del mismo dia.
+      if (!allowBreaks) {
+        const daySched = sched.filter(s => s.day === g.meeting.day);
+        if (daySched.length > 0) {
+          const minStart = Math.min(...daySched.map(s => s.start));
+          const maxEnd = Math.max(...daySched.map(s => s.end));
+          const contiguous = (g.meeting.end === minStart) || (g.meeting.start === maxEnd);
+          if (!contiguous) continue;
+        }
+      }
+
+      // Asignar
+      proposed.push({ student_id: sid, course_id: cid, ephemeral_group_id: g.ephemeral_id });
+      remCap.set(g.ephemeral_id, (remCap.get(g.ephemeral_id) || 0) - 1);
+      studentLoad.set(sid, (studentLoad.get(sid) || 0) + 1);
+
+      // ACTUALIZA sched local Y el mapa global (clave para evitar choques posteriores)
+      sched = sched.concat([g.meeting]);
+      studentSchedule.set(sid, sched);
+
+      placed = true;
+      break;
+    }
+
+    if (!placed) {
+      unassignedByCourse.set(cid, (unassignedByCourse.get(cid) || 0) + 1);
+    }
+  }
+}
 
     // 5) Salidas
 
