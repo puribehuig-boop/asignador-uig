@@ -33,8 +33,7 @@ export default function UploadPage() {
         transformHeader: normalizeHeader,
         complete: (res) => {
           const rows = (res.data as PreviewRow[]) ?? [];
-          const headers =
-            rows.length > 0 ? Object.keys(rows[0]) : (res.meta.fields || []).map(String);
+          const headers = rows.length ? Object.keys(rows[0]) : (res.meta.fields || []).map(String);
           setPreviewRows(rows);
           setPreviewHeaders(headers);
           resolve();
@@ -90,7 +89,7 @@ export default function UploadPage() {
 
   return (
     <main style={{ padding: 24, lineHeight: 1.4, maxWidth: 900 }}>
-      <h1>Subir CSV de ELEGIBILIDADES (alumno -> materias posibles)</h1>
+      <h1>Subir CSV de ELEGIBILIDADES (alumno &rarr; materias posibles)</h1>
       <p>
         Encabezados esperados (normalizamos mayúsculas/espacios/acentos):{" "}
         <code>student_code, student_name, course_code, course_name, turno</code>
@@ -115,7 +114,7 @@ A003,Ana Ruiz,ENG110,Inglés I,sabatino`}
             {loading ? "Subiendo..." : "Subir CSV"}
           </button>
           <a href="/" style={{ marginLeft: 12, textDecoration: "underline" }}>
-            ← Regresar a la página principal
+            &larr; Regresar a la página principal
           </a>
         </div>
       </form>
@@ -138,10 +137,7 @@ A003,Ana Ruiz,ENG110,Inglés I,sabatino`}
               <thead>
                 <tr>
                   {previewHeaders.map((h) => (
-                    <th
-                      key={h}
-                      style={{ textAlign: "left", borderBottom: "1px solid #ddd", padding: 6 }}
-                    >
+                    <th key={h} style={{ textAlign: "left", borderBottom: "1px solid #ddd", padding: 6 }}>
                       {h}
                     </th>
                   ))}
@@ -170,11 +166,7 @@ A003,Ana Ruiz,ENG110,Inglés I,sabatino`}
         </div>
       )}
 
-      {error && (
-        <p style={{ color: "crimson", marginTop: 12 }}>
-          ⚠️ {error}
-        </p>
-      )}
+      {error && <p style={{ color: "crimson", marginTop: 12 }}>⚠️ {error}</p>}
 
       {result?.ok && (
         <div style={{ marginTop: 16, background: "#eefbf0", padding: 12, borderRadius: 8 }}>
@@ -182,9 +174,7 @@ A003,Ana Ruiz,ENG110,Inglés I,sabatino`}
           <ul>
             <li>Archivo: {result.file?.filename}</li>
             <li>Total filas: {result.summary.rows_total}</li>
-            <li>
-              Válidas: {result.summary.rows_valid} · Inválidas: {result.summary.rows_invalid}
-            </li>
+            <li>Válidas: {result.summary.rows_valid} · Inválidas: {result.summary.rows_invalid}</li>
             <li>Alumnos upserted: {result.summary.students_upserted}</li>
             <li>Materias upserted: {result.summary.courses_upserted}</li>
             <li>Elegibilidades upserted: {result.summary.eligibilities_upserted}</li>
