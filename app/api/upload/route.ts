@@ -80,28 +80,46 @@ export async function POST(req: Request) {
       const [s,c] = k.split("|"); return { student_code: s, course_code: c };
     });
 
-    // UPSERT students (incluye shift)
-    let studentRows: { id: string; code: string }[] = [];
-    for (const part of chunk(students)) {
-      const { data, error } = await supabaseAdmin
-        .from("students")
-        .upsert(part, { onConflict: "code" })
-        .select("id, code");
-      if (error) throw error;
-      studentRows = studentRows.concat(data || []);
-    }
+    // ========================= UPSERT students (defensivo) =========================
+let studentsToUpsert = Array.from(studentByCode.values())
+  .filter((s) => typeof s.code === "string" && s.code.trim().length > 0) // <-- filtro duro
+  .map((s) => ({ code: s.code.trim(), name: s.name ?? null, shift: s.shift ?? null }));
 
-    // Si faltaran, reconsultar
-    if (studentRows.length < students.length) {
-      const { data, error } = await supabaseAdmin.from("students").select("id, code").in("code", students.map(s=>s.code));
-      if (error) throw error;
-      studentRows = data || studentRows;
-    }
-    const studentIdByCode = new Map(studentRows.map(r => [r.code, r.id]));
+if (studentsToUpsert.length === 0) {
+  return NextResponse.json(
+    { ok: false, error: "No se encontraron códigos de alumno válidos (student_code)." },
+    { status: 400 }
+  );
+}
 
-    // Asegurar actualización de shift (null-safe, sin non-null assertion)
-const updatesShift = students
-  .filter((s) => s.shift)
+let studentRows: { id: string; code: string }[] = [];
+for (const part of chunk(studentsToUpsert)) {
+  const { data, error } = await supabaseAdmin
+    .from("students")
+    .upsert(part, { onConflict: "code" })
+    .select("id, code");
+  if (error) {
+    // Mensaje explícito si llegara algo sin code
+    throw new Error(`Error al guardar alumnos: ${error.message}`);
+  }
+  studentRows = studentRows.concat(data || []);
+}
+
+// Re-consulta por si faltó algún id devuelto
+if (studentRows.length < studentsToUpsert.length) {
+  const { data, error } = await supabaseAdmin
+    .from("students")
+    .select("id, code")
+    .in("code", studentsToUpsert.map((s) => s.code));
+  if (error) throw error;
+  if (data) studentRows = data;
+}
+
+const studentIdByCode = new Map(studentRows.map((r) => [r.code, r.id]));
+
+// Asegurar actualización de shift (null-safe, sólo filas con id)
+const updatesShift = studentsToUpsert
+  .filter((s) => !!s.shift)
   .map((s) => {
     const id = studentIdByCode.get(s.code);
     return id ? { id, shift: s.shift as string } : null;
@@ -115,6 +133,8 @@ for (const part of chunk(updatesShift, 1000)) {
     .upsert(part, { onConflict: "id" });
   if (error) throw error;
 }
+// ======================= FIN UPSERT students (defensivo) =======================
+
 
   // UPSERT courses
     let courseRows: { id: string; code: string }[] = [];
