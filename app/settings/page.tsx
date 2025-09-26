@@ -3,7 +3,6 @@ import { useEffect, useState } from "react";
 
 type Settings = {
   max_courses_per_student: number;
-
   start_matutino: string;  duration_matutino: number;  allow_breaks_matutino: boolean;
   start_vespertino: string; duration_vespertino: number; allow_breaks_vespertino: boolean;
   start_sabatino: string;   duration_sabatino: number;   allow_breaks_sabatino: boolean;
@@ -15,11 +14,11 @@ type Room = { id: string; code: string; name: string | null; capacity: number };
 export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [savedOk, setSavedOk] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const [settings, setSettings] = useState<Settings>({
     max_courses_per_student: 5,
-
     start_matutino: "07:00", duration_matutino: 90, allow_breaks_matutino: true,
     start_vespertino: "16:00", duration_vespertino: 90, allow_breaks_vespertino: true,
     start_sabatino: "08:00", duration_sabatino: 90, allow_breaks_sabatino: true,
@@ -43,7 +42,7 @@ export default function SettingsPage() {
   useEffect(() => { loadAll(); }, []);
 
   const saveSettings = async () => {
-    setSaving(true); setError(null);
+    setSaving(true); setSavedOk(false); setError(null);
     try {
       const res = await fetch("/api/settings", {
         method: "POST",
@@ -52,8 +51,14 @@ export default function SettingsPage() {
       });
       const json = await res.json();
       if (!json.ok) throw new Error(json.error || "Error al guardar ajustes");
-    } catch (e: any) { setError(e?.message || "Error"); }
-    finally { setSaving(false); }
+      setSavedOk(true); // mostrar confirmación
+      // ocultar confirmación después de 2.5s
+      setTimeout(() => setSavedOk(false), 2500);
+    } catch (e: any) {
+      setError(e?.message || "Error");
+    } finally {
+      setSaving(false);
+    }
   };
 
   const createOrUpdateRoom = async (payload: Partial<Room> & { code: string; capacity: number }) => {
@@ -101,7 +106,10 @@ export default function SettingsPage() {
     <main style={{ padding: 24, maxWidth: 1100, lineHeight: 1.4 }}>
       <h1>Ajustes · General</h1>
       <p>Define <strong>restricciones por turno</strong> y administra los <strong>salones</strong>.</p>
+
       {error && <p style={{ color: "crimson" }}>⚠️ {error}</p>}
+      {savedOk && <p style={{ color: "green" }}>✓ Ajustes guardados</p>}
+
       {loading ? <p>Cargando…</p> : (
         <>
           {/* RESTRICCIONES */}
@@ -125,7 +133,9 @@ export default function SettingsPage() {
             </div>
 
             <div style={{ marginTop: 12 }}>
-              <button onClick={saveSettings} disabled={saving}>{saving ? "Guardando…" : "Guardar ajustes"}</button>
+              <button onClick={saveSettings} disabled={saving}>
+                {saving ? "Guardando…" : "Guardar ajustes"}
+              </button>
             </div>
           </section>
 
