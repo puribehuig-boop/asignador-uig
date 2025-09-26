@@ -45,17 +45,18 @@ export async function POST() {
     };
     const maxCoursesPerStudent = Number(S.max_courses_per_student ?? 5);
 
-    // Datos
+    // Datos (OJO: ahora pedimos name)
     const [{ data: elig }, { data: courses }, { data: rooms }, { data: students }] = await Promise.all([
       supabaseAdmin.from("student_eligibilities").select("student_id, course_id"),
       supabaseAdmin.from("courses").select("id, code, name"),
       supabaseAdmin.from("rooms").select("id, code, capacity"),
-      supabaseAdmin.from("students").select("id, shift"),
+      supabaseAdmin.from("students").select("id, shift, name"),
     ]);
 
     const coursesArr = (courses ?? []) as Course[];
     const roomsArr = (rooms ?? []) as Room[];
     const studentShift = new Map<string, Shift | null>((students ?? []).map((s: any) => [s.id, (s.shift ?? null) as Shift | null]));
+    const studentName = new Map<string, string | null>((students ?? []).map((s: any) => [s.id, (s.name ?? null) as string | null]));
 
     // Demanda por curso y turno
     const demandByCourseTotal = new Map<string, number>();
@@ -80,13 +81,13 @@ export async function POST() {
 
     // Generar N slots consecutivos por día desde la hora de inicio
     const timeSlotsByShift: Record<Shift, { day: number; start: number; end: number; index: number }[]> = {
-      matutino: [], vespertino: [], sabatino: [], dominical: []
-    };
-    (Object.keys(SHIFT_DAYS) as Shift[]).forEach(shift => {
+      matutino: [], vespertino: [], sabatino: [], dominional: []
+    } as any;
+    (["matutino","vespertino","sabatino","dominical"] as Shift[]).forEach(shift => {
       const start0 = startByShift[shift];
       const len = durationByShift[shift];
       const n = Math.max(1, slotsPerDayByShift[shift]);
-      for (const day of SHIFT_DAYS[shift]) {
+      for (const day of (SHIFT_DAYS as any)[shift]) {
         for (let i = 0; i < n; i++) {
           const start = start0 + i * len;
           timeSlotsByShift[shift].push({ day, start, end: start + len, index: i + 1 });
@@ -99,7 +100,7 @@ export async function POST() {
       matutino: [], vespertino: [], sabatino: [], dominical: []
     };
     for (const room of roomsArr) {
-      (Object.keys(timeSlotsByShift) as Shift[]).forEach(shift => {
+      (["matutino","vespertino","sabatino","dominical"] as Shift[]).forEach(shift => {
         for (const s of timeSlotsByShift[shift]) {
           allSlotsByShift[shift].push({ key: `${room.id}|${s.day}|${s.start}`, room, slot: s });
         }
@@ -121,7 +122,7 @@ export async function POST() {
     for (const c of coursesArr) {
       const perShift = demandByCourseShift.get(c.id) || { matutino:0, vespertino:0, sabatino:0, dominical:0 };
 
-      (Object.keys(perShift) as Shift[]).forEach((shift) => {
+      (["matutino","vespertino","sabatino","dominical"] as Shift[]).forEach((shift) => {
         let demand = perShift[shift];
         if (demand <= 0) return;
 
@@ -152,7 +153,7 @@ export async function POST() {
       });
     }
 
-    // Asignación alumno→grupo
+    // Asignación alumno->grupo
     const groupsByCourse = new Map<string, typeof scheduledGroups>();
     for (const g of scheduledGroups) {
       const arr = groupsByCourse.get(g.course_id) || [];
@@ -206,11 +207,9 @@ export async function POST() {
         for (const g of gs) {
           if ((remCap.get(g.ephemeral_id) || 0) <= 0) continue;
 
-          // Regla explícita: no dos clases a la MISMA hora exacta
           const sameHour = sched.some(s => s.day === g.meeting.day && s.start === g.meeting.start);
           if (sameHour) continue;
 
-          // Choque horario general
           const hasOverlap = sched.some(s => overlap(s, g.meeting));
           if (hasOverlap) continue;
 
@@ -243,16 +242,17 @@ export async function POST() {
       };
     });
 
-    // NUEVO: resumen por alumno (todos los alumnos con elegibilidades, incluyendo 0 asignaciones)
+    // Conteos por alumno
     const assignedCount = new Map<string, number>();
     for (const a of proposed) assignedCount.set(a.student_id, (assignedCount.get(a.student_id) || 0) + 1);
 
     const studentsOverview = studentsIds.map((sid) => ({
       student_id: sid,
+      student_name: (studentName.get(sid) || null) as string | null,
       shift: (studentShift.get(sid) || null) as Shift | null,
       assignments: assignedCount.get(sid) || 0,
+      eligible: (eligByStudent.get(sid) || []).length,
     }))
-    // ordena: turno (alfabético, null al final) y luego assignments desc
     .sort((x, y) => {
       const sx = x.shift || "zzzz", sy = y.shift || "zzzz";
       if (sx !== sy) return sx < sy ? -1 : 1;
@@ -270,7 +270,7 @@ export async function POST() {
       },
       summary: {
         students_total: new Set(studentsIds).size,
-        courses_with_demand: groupsByCourse.size,
+        courses_with_demand: new Set(coursesArr.map(c => c.id)).size,
         scheduled_groups: scheduledGroups.length,
         proposed_assignments: proposed.length,
       },
@@ -281,7 +281,6 @@ export async function POST() {
       })),
       scheduled_groups: groupsUsage,
       assignments_preview: proposed,
-      // NUEVO
       students_overview: studentsOverview,
     });
   } catch (e: any) {
