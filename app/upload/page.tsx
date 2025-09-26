@@ -1,5 +1,6 @@
 "use client";
-import { useState } from "react";
+
+import React, { useState } from "react";
 import Papa from "papaparse";
 
 type PreviewRow = Record<string, string | number | null | undefined>;
@@ -8,9 +9,7 @@ const normalizeHeader = (h: string) => {
   const raw = (h ?? "").toString().replace(/\uFEFF/g, "").trim().toLowerCase();
   const noAccent = raw.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
   const key = noAccent.replace(/\s+/g, "_");
-  // sinónimos comunes
-  if (key === "shift") return "turno";
-  if (key === "turnos") return "turno";
+  if (key === "shift" || key === "turnos") return "turno";
   return key;
 };
 
@@ -34,7 +33,8 @@ export default function UploadPage() {
         transformHeader: normalizeHeader,
         complete: (res) => {
           const rows = (res.data as PreviewRow[]) ?? [];
-          const headers = rows.length ? Object.keys(rows[0]) : (res.meta.fields || []).map(String);
+          const headers =
+            rows.length > 0 ? Object.keys(rows[0]) : (res.meta.fields || []).map(String);
           setPreviewRows(rows);
           setPreviewHeaders(headers);
           resolve();
@@ -64,8 +64,12 @@ export default function UploadPage() {
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError(null); setResult(null);
-    if (!file) return setError("Selecciona un archivo CSV.");
+    setError(null);
+    setResult(null);
+    if (!file) {
+      setError("Selecciona un archivo CSV.");
+      return;
+    }
     setLoading(true);
     try {
       const fd = new FormData();
@@ -86,8 +90,11 @@ export default function UploadPage() {
 
   return (
     <main style={{ padding: 24, lineHeight: 1.4, maxWidth: 900 }}>
-      <h1>Subir CSV de ELEGIBILIDADES (alumno → materias posibles)</h1>
-      <p>Encabezados esperados (normalizamos mayúsculas/espacios/acentos): <code>student_code, student_name, course_code, course_name, turno</code></p>
+      <h1>Subir CSV de ELEGIBILIDADES (alumno -> materias posibles)</h1>
+      <p>
+        Encabezados esperados (normalizamos mayúsculas/espacios/acentos):{" "}
+        <code>student_code, student_name, course_code, course_name, turno</code>
+      </p>
 
       <pre style={{ background: "#f5f5f5", padding: 12, overflow: "auto" }}>
 {`student_code,student_name,course_code,course_name,turno
@@ -98,9 +105,18 @@ A003,Ana Ruiz,ENG110,Inglés I,sabatino`}
       </pre>
 
       <form onSubmit={onSubmit} style={{ marginTop: 16 }}>
-        <input type="file" accept=".csv,text/csv" onChange={(e) => onFileChange(e.target.files?.[0] || null)} />
+        <input
+          type="file"
+          accept=".csv,text/csv"
+          onChange={(e) => onFileChange(e.target.files?.[0] || null)}
+        />
         <div style={{ marginTop: 12 }}>
-          <button disabled={loading || !file} type="submit">{loading ? "Subiendo..." : "Subir CSV"}</button>
+          <button disabled={loading || !file} type="submit">
+            {loading ? "Subiendo..." : "Subir CSV"}
+          </button>
+          <a href="/" style={{ marginLeft: 12, textDecoration: "underline" }}>
+            ← Regresar a la página principal
+          </a>
         </div>
       </form>
 
@@ -111,8 +127,9 @@ A003,Ana Ruiz,ENG110,Inglés I,sabatino`}
 
           {!hasTurno && (
             <p style={{ color: "crimson" }}>
-              ⚠️ No se detectó la columna <code>turno</code> en los encabezados (encontrados: {previewHeaders.join(", ") || "ninguno"}).
-              Aceptamos también <code>Shift</code> o <code>Turnos</code> (se mapean a <code>turno</code>).
+              ⚠️ No se detectó la columna <code>turno</code> en los encabezados (encontrados:{" "}
+              {previewHeaders.join(", ") || "ninguno"}). Aceptamos también <code>Shift</code> o{" "}
+              <code>Turnos</code> (se mapean a <code>turno</code>).
             </p>
           )}
 
@@ -121,7 +138,12 @@ A003,Ana Ruiz,ENG110,Inglés I,sabatino`}
               <thead>
                 <tr>
                   {previewHeaders.map((h) => (
-                    <th key={h} style={{ textAlign: "left", borderBottom: "1px solid #ddd", padding: 6 }}>{h}</th>
+                    <th
+                      key={h}
+                      style={{ textAlign: "left", borderBottom: "1px solid #ddd", padding: 6 }}
+                    >
+                      {h}
+                    </th>
                   ))}
                 </tr>
               </thead>
@@ -136,7 +158,11 @@ A003,Ana Ruiz,ENG110,Inglés I,sabatino`}
                   </tr>
                 ))}
                 {previewRows.length === 0 && (
-                  <tr><td colSpan={previewHeaders.length} style={{ padding: 6, color: "#888" }}>Sin filas</td></tr>
+                  <tr>
+                    <td colSpan={previewHeaders.length} style={{ padding: 6, color: "#888" }}>
+                      Sin filas
+                    </td>
+                  </tr>
                 )}
               </tbody>
             </table>
@@ -144,7 +170,11 @@ A003,Ana Ruiz,ENG110,Inglés I,sabatino`}
         </div>
       )}
 
-      {error && <p style={{ color: "crimson", marginTop: 12 }}>⚠️ {error}</p>}
+      {error && (
+        <p style={{ color: "crimson", marginTop: 12 }}>
+          ⚠️ {error}
+        </p>
+      )}
 
       {result?.ok && (
         <div style={{ marginTop: 16, background: "#eefbf0", padding: 12, borderRadius: 8 }}>
@@ -152,16 +182,14 @@ A003,Ana Ruiz,ENG110,Inglés I,sabatino`}
           <ul>
             <li>Archivo: {result.file?.filename}</li>
             <li>Total filas: {result.summary.rows_total}</li>
-            <li>Válidas: {result.summary.rows_valid} · Inválidas: {result.summary.rows_invalid}</li>
+            <li>
+              Válidas: {result.summary.rows_valid} · Inválidas: {result.summary.rows_invalid}
+            </li>
             <li>Alumnos upserted: {result.summary.students_upserted}</li>
             <li>Materias upserted: {result.summary.courses_upserted}</li>
             <li>Elegibilidades upserted: {result.summary.eligibilities_upserted}</li>
           </ul>
         </div>
-      
-      <div style={{ marginTop: 16 }}>
-        <a href="/" style={{ textDecoration: "underline" }}>← Regresar a la página principal</a>
-      </div>
       )}
     </main>
   );
