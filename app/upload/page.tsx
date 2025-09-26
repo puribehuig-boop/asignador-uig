@@ -32,8 +32,11 @@ export default function UploadPage() {
 
   return (
     <main style={{ padding: 24, lineHeight: 1.4, maxWidth: 720 }}>
-      <h1>Subir CSV: alumnos vs materias posibles</h1>
-      <p>Formato requerido (encabezados exactos):</p>
+      <h1>Subir CSV de ELEGIBILIDADES (alumno → materias posibles)</h1>
+      <p>Este CSV <strong>NO</strong> asigna alumnos a grupos. Solo carga qué materias
+        <em>puede</em> llevar cada alumno. La asignación se calculará después en
+        <a href="/assign" style={{ marginLeft: 6 }}>/assign</a>.
+      </p>
       <pre style={{ background: "#f5f5f5", padding: 12, overflow: "auto" }}>
 {`student_code,student_name,course_code,course_name
 A001,María López,MAT101,Álgebra I
