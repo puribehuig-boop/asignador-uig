@@ -10,7 +10,8 @@ export default function AssignPage() {
   const [settings, setSettings] = useState<any>(null);
   const [tab, setTab] = useState<"materias" | "alumnos" | "horarios">("materias");
 
-  // Horarios: selección
+  // Horarios: selección + filtro por turno
+  const [shiftFilter, setShiftFilter] = useState<"all" | "matutino" | "vespertino" | "sabatino" | "dominical">("all");
   const [studentQuery, setStudentQuery] = useState("");
   const [selectedStudentId, setSelectedStudentId] = useState<string | null>(null);
 
@@ -36,51 +37,70 @@ export default function AssignPage() {
     finally { setLoading(false); }
   };
 
-  // Helpers para horarios
-  const studentOptions = (data?.students_catalog || []).map((s: any) => ({
-    id: s.id, label: s.name ? `${s.name} (${s.id})` : s.id
-  }));
+  // Opciones de alumnos y salones (autocompletar)
+  const studentOptions = (data?.students_catalog || [])
+    .filter((s: any) => shiftFilter === "all" || (s.shift || "") === shiftFilter)
+    .map((s: any) => ({
+      id: s.id as string,
+      name: (s.name as string) || null,
+      label: s.name ? `${s.name} (${s.id})` : s.id,
+      shift: (s.shift as string) || null,
+    }));
+
   const roomOptions = (data?.rooms_catalog || []).map((r: any) => ({ code: r.code }));
 
+  // Buscar alumno POR NOMBRE (más fácil). Si hay varias coincidencias exactas, toma la primera.
   const pickStudentFromQuery = () => {
     if (!data) return;
     const q = studentQuery.trim().toLowerCase();
-    const byLabel = studentOptions.find((s: any) => s.label.toLowerCase() === q);
-    if (byLabel) { setSelectedStudentId(byLabel.id); return; }
-    const byId = studentOptions.find((s: any) => s.id.toLowerCase() === q);
-    if (byId) { setSelectedStudentId(byId.id); return; }
-    const contains = studentOptions.find((s: any) => s.label.toLowerCase().includes(q));
-    setSelectedStudentId(contains ? contains.id : null);
+    if (!q) { setSelectedStudentId(null); return; }
+
+    // 1) match exacto por nombre (case-insensitive)
+    const exactByName = studentOptions.filter((s: any) => (s.name || "").toLowerCase() === q);
+    if (exactByName.length > 0) { setSelectedStudentId(exactByName[0].id); return; }
+
+    // 2) contiene por nombre
+    const containsByName = studentOptions.filter((s: any) => (s.name || "").toLowerCase().includes(q));
+    if (containsByName.length > 0) { setSelectedStudentId(containsByName[0].id); return; }
+
+    // 3) fallback por ID en caso de que el usuario pegue el ID
+    const exactById = studentOptions.find((s: any) => s.id.toLowerCase() === q);
+    if (exactById) { setSelectedStudentId(exactById.id); return; }
+
+    const containsById = studentOptions.find((s: any) => s.id.toLowerCase().includes(q));
+    setSelectedStudentId(containsById ? containsById.id : null);
   };
 
   const pickRoomFromQuery = () => {
     if (!data) return;
     const q = roomQuery.trim().toLowerCase();
+    if (!q) { setSelectedRoomCode(null); return; }
     const exact = roomOptions.find((r: any) => r.code.toLowerCase() === q);
     if (exact) { setSelectedRoomCode(exact.code); return; }
     const contains = roomOptions.find((r: any) => r.code.toLowerCase().includes(q));
     setSelectedRoomCode(contains ? contains.code : null);
   };
 
+  // Resultados filtrados por turno
   const studentSchedule = (() => {
     if (!data || !selectedStudentId) return [];
-    return (data.assignments_detailed as any[])
-      .filter(a => a.student_id === selectedStudentId)
-      .slice()
-      .sort((a,b) => (a.day_of_week - b.day_of_week) || (a.start_min - b.start_min));
+    const base = (data.assignments_detailed as any[])
+      .filter((a: any) => a.student_id === selectedStudentId);
+    const filtered = shiftFilter === "all" ? base : base.filter((a: any) => (a.shift || "") === shiftFilter);
+    return filtered.slice().sort((a: any, b: any) => (a.day_of_week - b.day_of_week) || (a.start_min - b.start_min));
   })();
 
   const roomSchedule = (() => {
     if (!data || !selectedRoomCode) return [];
-    return (data.scheduled_groups as any[])
-      .filter((g: any) => g.room === selectedRoomCode)
-      .slice()
-      .sort((a: any, b: any) => (a.day_of_week - b.day_of_week) || (a.start_min - b.start_min));
+    const base = (data.scheduled_groups as any[])
+      .filter((g: any) => g.room === selectedRoomCode);
+    const filtered = shiftFilter === "all" ? base : base.filter((g: any) => (g.turno || "") === shiftFilter);
+    return filtered.slice().sort((a: any, b: any) => (a.day_of_week - b.day_of_week) || (a.start_min - b.start_min));
   })();
 
   const selectedStudentLabel = (() => {
     if (!data || !selectedStudentId) return "";
-    const inCat = (data.students_catalog as any[]).find(s => s.id === selectedStudentId);
+    const inCat = (data.students_catalog as any[]).find((s: any) => s.id === selectedStudentId);
     if (!inCat) return selectedStudentId;
     return inCat.name ? `${inCat.name} (${inCat.id})` : inCat.id;
   })();
@@ -254,13 +274,32 @@ export default function AssignPage() {
             <>
               <h3 style={{ marginTop: 16 }}>Buscar horarios</h3>
 
-              {/* Buscador alumno */}
+              {/* Filtro por turno (aplica a ambos buscadores y resultados) */}
+              <div style={{ marginBottom: 12 }}>
+                <label>Turno: </label>
+                <select
+                  value={shiftFilter}
+                  onChange={(e) => {
+                    const v = e.target.value as any;
+                    setShiftFilter(v);
+                    // Al cambiar el turno, no alteramos la selección actual, solo el filtro de resultados.
+                  }}
+                >
+                  <option value="all">Todos</option>
+                  <option value="matutino">Matutino</option>
+                  <option value="vespertino">Vespertino</option>
+                  <option value="sabatino">Sabatino</option>
+                  <option value="dominical">Dominical</option>
+                </select>
+              </div>
+
+              {/* Buscadores */}
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, alignItems: "end" }}>
                 <div>
-                  <label>Alumno</label>
+                  <label>Alumno (por nombre)</label>
                   <input
                     list="students-list"
-                    placeholder="Escribe nombre o ID..."
+                    placeholder="Escribe el nombre del alumno..."
                     value={studentQuery}
                     onChange={(e) => setStudentQuery(e.target.value)}
                     onKeyDown={(e) => { if (e.key === "Enter") pickStudentFromQuery(); }}
@@ -268,7 +307,7 @@ export default function AssignPage() {
                   />
                   <datalist id="students-list">
                     {studentOptions.slice(0, 500).map((s: any) => (
-                      <option key={s.id} value={s.label} />
+                      <option key={s.id} value={s.name || s.id}>{s.label}</option>
                     ))}
                   </datalist>
                   <div style={{ marginTop: 8 }}>
@@ -279,7 +318,6 @@ export default function AssignPage() {
                   </div>
                 </div>
 
-                {/* Buscador salon */}
                 <div>
                   <label>Salon</label>
                   <input
@@ -309,7 +347,7 @@ export default function AssignPage() {
                 <div style={{ marginTop: 16 }}>
                   <h4>Horario del alumno</h4>
                   {studentSchedule.length === 0 ? (
-                    <p style={{ color: "#666" }}>Sin clases asignadas para este alumno en la vista previa.</p>
+                    <p style={{ color: "#666" }}>Sin clases asignadas para este alumno en la vista previa (con el filtro de turno actual).</p>
                   ) : (
                     <table style={{ width: "100%", borderCollapse: "collapse" }}>
                       <thead>
@@ -330,7 +368,7 @@ export default function AssignPage() {
                             <td style={{ padding: 6, borderBottom: "1px solid #f0f0f0" }}>{it.end_time.slice(0,5)}</td>
                             <td style={{ padding: 6, borderBottom: "1px solid #f0f0f0" }}>{it.course_code}</td>
                             <td style={{ padding: 6, borderBottom: "1px solid #f0f0f0" }}>{it.room_code}</td>
-                            <td style={{ padding: 6, borderBottom: "1px solid " + "#f0f0f0" }}>{it.shift || "—"}</td>
+                            <td style={{ padding: 6, borderBottom: "1px solid #f0f0f0", textTransform: "capitalize" }}>{it.shift || "—"}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -344,7 +382,7 @@ export default function AssignPage() {
                 <div style={{ marginTop: 16 }}>
                   <h4>Horario del salon</h4>
                   {roomSchedule.length === 0 ? (
-                    <p style={{ color: "#666" }}>Este salon no tiene clases en la vista previa.</p>
+                    <p style={{ color: "#666" }}>Este salon no tiene clases en la vista previa (con el filtro de turno actual).</p>
                   ) : (
                     <table style={{ width: "100%", borderCollapse: "collapse" }}>
                       <thead>
@@ -352,10 +390,10 @@ export default function AssignPage() {
                           <th style={{ textAlign: "left", borderBottom: "1px solid #ddd", padding: 6 }}>Dia</th>
                           <th style={{ textAlign: "left", borderBottom: "1px solid #ddd", padding: 6 }}>Inicio</th>
                           <th style={{ textAlign: "left", borderBottom: "1px solid #ddd", padding: 6 }}>Fin</th>
-                          <th style={{ textAlign: "left", borderBottom: "1px solid " + "#ddd", padding: 6 }}>Curso</th>
-                          <th style={{ textAlign: "left", borderBottom: "1px solid " + "#ddd", padding: 6 }}>Turno</th>
-                          <th style={{ textAlign: "right", borderBottom: "1px solid " + "#ddd", padding: 6 }}>Cap</th>
-                          <th style={{ textAlign: "right", borderBottom: "1px solid " + "#ddd", padding: 6 }}>Usados</th>
+                          <th style={{ textAlign: "left", borderBottom: "1px solid #ddd", padding: 6 }}>Curso</th>
+                          <th style={{ textAlign: "left", borderBottom: "1px solid #ddd", padding: 6 }}>Turno</th>
+                          <th style={{ textAlign: "right", borderBottom: "1px solid #ddd", padding: 6 }}>Cap</th>
+                          <th style={{ textAlign: "right", borderBottom: "1px solid #ddd", padding: 6 }}>Usados</th>
                         </tr>
                       </thead>
                       <tbody>
