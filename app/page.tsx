@@ -44,8 +44,8 @@ export default function Home() {
         <li style={{ border: "1px solid #eee", borderRadius: 12, padding: 16 }}>
           <div style={{ fontSize: 12, color: "#888" }}>Paso 1</div>
           <div style={{ fontSize: 18, fontWeight: 600 }}>Cargar elegibilidades</div>
-          <p>Sube el CSV de alumno -> materias posibles con columna "turno".</p>
-          <a href="/upload">Ir a /upload -></a>
+          <p>Sube el CSV de alumno &rarr; materias posibles con columna "turno".</p>
+          <a href="/upload">Ir a /upload &rarr;</a>
 
           <div style={{ marginTop: 12, background: "#f9fafc", padding: 12, borderRadius: 8 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -81,7 +81,7 @@ export default function Home() {
           <div style={{ fontSize: 12, color: "#888" }}>Paso 2</div>
           <div style={{ fontSize: 18, fontWeight: 600 }}>Revisar salones y restricciones</div>
           <p>Administra salones y define hora de inicio, duracion y descansos por turno.</p>
-          <a href="/settings">Ir a Ajustes (General) -></a>
+          <a href="/settings">Ir a Ajustes (General) &rarr;</a>
         </li>
 
         {/* Paso 3 */}
@@ -89,7 +89,7 @@ export default function Home() {
           <div style={{ fontSize: 12, color: "#888" }}>Paso 3</div>
           <div style={{ fontSize: 18, fontWeight: 600 }}>Asignar y ver vista previa</div>
           <p>Genera grupos, horarios y asignacion propuesta (sin escribir en DB).</p>
-          <a href="/assign">Ir a Vista previa -></a>
+          <a href="/assign">Ir a Vista previa &rarr;</a>
         </li>
       </ol>
     </main>
