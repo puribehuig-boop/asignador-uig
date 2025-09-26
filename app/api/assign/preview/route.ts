@@ -9,10 +9,10 @@ type Room = { id: string; code: string; capacity: number };
 type Course = { id: string; code: string; name: string | null };
 
 const SHIFT_DAYS: Record<Shift, number[]> = {
-  matutino: [1,2,3,4,5],  // L-V
+  matutino: [1,2,3,4,5],
   vespertino: [1,2,3,4,5],
-  sabatino: [6],          // Sábado
-  dominical: [7],         // Domingo
+  sabatino: [6],
+  dominical: [7],
 };
 
 function hhmmToMin(hhmm: string) { const [h,m] = hhmm.split(":").map(Number); return (h||0)*60+(m||0); }
@@ -21,7 +21,7 @@ function overlap(a: Meeting, b: Meeting) { return a.day===b.day && Math.max(a.st
 
 export async function POST() {
   try {
-    // 0) Ajustes
+    // Ajustes
     const { data: sRow } = await supabaseAdmin.from("system_settings").select("settings").eq("id","general").single();
     const S = sRow?.settings ?? {};
 
@@ -45,7 +45,7 @@ export async function POST() {
     };
     const maxCoursesPerStudent = Number(S.max_courses_per_student ?? 5);
 
-    // 1) Datos
+    // Datos
     const [{ data: elig }, { data: courses }, { data: rooms }, { data: students }] = await Promise.all([
       supabaseAdmin.from("student_eligibilities").select("student_id, course_id"),
       supabaseAdmin.from("courses").select("id, code, name"),
@@ -57,7 +57,7 @@ export async function POST() {
     const roomsArr = (rooms ?? []) as Room[];
     const studentShift = new Map<string, Shift | null>((students ?? []).map((s: any) => [s.id, (s.shift ?? null) as Shift | null]));
 
-    // 2) Demanda por curso y turno
+    // Demanda por curso y turno
     const demandByCourseTotal = new Map<string, number>();
     const demandByCourseShift = new Map<string, Record<Shift, number>>();
     const eligByStudent = new Map<string, string[]>();
@@ -78,7 +78,7 @@ export async function POST() {
       eligByStudent.set(sid, arr);
     }
 
-    // 3) Generar slots por turno: N slots consecutivos por día desde la hora de inicio
+    // Generar N slots consecutivos por día desde la hora de inicio
     const timeSlotsByShift: Record<Shift, { day: number; start: number; end: number; index: number }[]> = {
       matutino: [], vespertino: [], sabatino: [], dominical: []
     };
@@ -94,7 +94,7 @@ export async function POST() {
       }
     });
 
-    // 4) Espacios (room x slot) por turno
+    // Espacios (room x slot)
     const allSlotsByShift: Record<Shift, { key: string; room: Room; slot: { day: number; start: number; end: number; index: number } }[]> = {
       matutino: [], vespertino: [], sabatino: [], dominical: []
     };
@@ -106,7 +106,7 @@ export async function POST() {
       });
     }
 
-    // 5) Programar grupos por curso/turno hasta cubrir demanda (greedy por capacidad)
+    // Programación greedy por capacidad
     const scheduledGroups: Array<{
       ephemeral_id: string;
       course_id: string;
@@ -152,7 +152,7 @@ export async function POST() {
       });
     }
 
-    // 6) Asignación alumno→grupo (mismo turno, sin choques)
+    // Asignación alumno→grupo
     const groupsByCourse = new Map<string, typeof scheduledGroups>();
     for (const g of scheduledGroups) {
       const arr = groupsByCourse.get(g.course_id) || [];
@@ -206,11 +206,11 @@ export async function POST() {
         for (const g of gs) {
           if ((remCap.get(g.ephemeral_id) || 0) <= 0) continue;
 
-                    // Prohibición explícita: ningún alumno puede tener dos clases a la misma hora exacta
+          // Regla explícita: no dos clases a la MISMA hora exacta
           const sameHour = sched.some(s => s.day === g.meeting.day && s.start === g.meeting.start);
           if (sameHour) continue;
-          
-          // Choque horario (cubre solapamientos parciales o totales)
+
+          // Choque horario general
           const hasOverlap = sched.some(s => overlap(s, g.meeting));
           if (hasOverlap) continue;
 
@@ -224,7 +224,7 @@ export async function POST() {
       }
     }
 
-    // 7) Resumen
+    // Resumen por grupo
     const courseById = new Map(coursesArr.map(c => [c.id, c]));
     const groupsUsage = scheduledGroups.map(g => {
       const used = g.capacity - (remCap.get(g.ephemeral_id) || 0);
@@ -243,6 +243,22 @@ export async function POST() {
       };
     });
 
+    // NUEVO: resumen por alumno (todos los alumnos con elegibilidades, incluyendo 0 asignaciones)
+    const assignedCount = new Map<string, number>();
+    for (const a of proposed) assignedCount.set(a.student_id, (assignedCount.get(a.student_id) || 0) + 1);
+
+    const studentsOverview = studentsIds.map((sid) => ({
+      student_id: sid,
+      shift: (studentShift.get(sid) || null) as Shift | null,
+      assignments: assignedCount.get(sid) || 0,
+    }))
+    // ordena: turno (alfabético, null al final) y luego assignments desc
+    .sort((x, y) => {
+      const sx = x.shift || "zzzz", sy = y.shift || "zzzz";
+      if (sx !== sy) return sx < sy ? -1 : 1;
+      return y.assignments - x.assignments;
+    });
+
     return NextResponse.json({
       ok: true,
       params: {
@@ -253,7 +269,7 @@ export async function POST() {
         start_dominical: S.start_dominical, duration_dominical: S.duration_dominical, allow_breaks_dominical: S.allow_breaks_dominical, slots_per_day_dominical: S.slots_per_day_dominical,
       },
       summary: {
-        students_total: eligByStudent.size,
+        students_total: new Set(studentsIds).size,
         courses_with_demand: groupsByCourse.size,
         scheduled_groups: scheduledGroups.length,
         proposed_assignments: proposed.length,
@@ -265,6 +281,8 @@ export async function POST() {
       })),
       scheduled_groups: groupsUsage,
       assignments_preview: proposed,
+      // NUEVO
+      students_overview: studentsOverview,
     });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message ?? "Error" }, { status: 500 });
