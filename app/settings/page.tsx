@@ -5,14 +5,13 @@ type Settings = {
   max_courses_per_student: number;
   target_group_size: number;
   slot_length_minutes: number;
-  day_start: string;
-  day_end: string;
-  days_active: number[];
+  start_matutino: string;
+  start_vespertino: string;
+  start_sabatino: string;
+  start_dominical: string;
 };
 
 type Room = { id: string; code: string; name: string | null; capacity: number };
-
-const dayLabel = (d: number) => ["","Lun","Mar","Mié","Jue","Vie","Sáb","Dom"][d] || `${d}`;
 
 export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
@@ -23,43 +22,27 @@ export default function SettingsPage() {
     max_courses_per_student: 5,
     target_group_size: 30,
     slot_length_minutes: 90,
-    day_start: "07:00",
-    day_end: "21:00",
-    days_active: [1,2,3,4,5],
+    start_matutino: "07:00",
+    start_vespertino: "16:00",
+    start_sabatino: "08:00",
+    start_dominical: "08:00",
   });
 
   const [rooms, setRooms] = useState<Room[]>([]);
-  const [roomForm, setRoomForm] = useState<{ code: string; name: string; capacity: number }>({
-    code: "", name: "", capacity: 30
-  });
+  const [roomForm, setRoomForm] = useState({ code: "", name: "", capacity: 30 });
 
   const loadAll = async () => {
     setLoading(true); setError(null);
     try {
       const [sRes, rRes] = await Promise.all([fetch("/api/settings"), fetch("/api/rooms")]);
-      const sJson = await sRes.json();
-      const rJson = await rRes.json();
+      const sJson = await sRes.json(); const rJson = await rRes.json();
       if (!sJson.ok) throw new Error(sJson.error || "Error al cargar ajustes");
       if (!rJson.ok) throw new Error(rJson.error || "Error al cargar salones");
-      setSettings(sJson.settings);
-      setRooms(rJson.rooms as Room[]);
-    } catch (e: any) {
-      setError(e?.message || "Error");
-    } finally {
-      setLoading(false);
-    }
+      setSettings(sJson.settings); setRooms(rJson.rooms as Room[]);
+    } catch (e: any) { setError(e?.message || "Error"); }
+    finally { setLoading(false); }
   };
-
   useEffect(() => { loadAll(); }, []);
-
-  const toggleDay = (d: number) => {
-    setSettings((prev) => {
-      const days = prev.days_active.includes(d)
-        ? prev.days_active.filter(x => x !== d)
-        : [...prev.days_active, d].sort((a,b) => a-b);
-      return { ...prev, days_active: days };
-    });
-  };
 
   const saveSettings = async () => {
     setSaving(true); setError(null);
@@ -71,35 +54,24 @@ export default function SettingsPage() {
       });
       const json = await res.json();
       if (!json.ok) throw new Error(json.error || "Error al guardar ajustes");
-    } catch (e: any) {
-      setError(e?.message || "Error");
-    } finally {
-      setSaving(false);
-    }
+    } catch (e: any) { setError(e?.message || "Error"); }
+    finally { setSaving(false); }
   };
 
   const createOrUpdateRoom = async (payload: Partial<Room> & { code: string; capacity: number }) => {
-    const res = await fetch("/api/rooms", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    const json = await res.json();
-    if (!json.ok) throw new Error(json.error || "Error al guardar salón");
+    const res = await fetch("/api/rooms", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) });
+    const json = await res.json(); if (!json.ok) throw new Error(json.error || "Error al guardar salón");
   };
-
   const removeRoom = async (id: string) => {
     if (!confirm("¿Eliminar salón?")) return;
     const res = await fetch(`/api/rooms/${id}`, { method: "DELETE" });
-    const json = await res.json();
-    if (!json.ok) throw new Error(json.error || "Error al eliminar salón");
+    const json = await res.json(); if (!json.ok) throw new Error(json.error || "Error al eliminar salón");
   };
 
   return (
     <main style={{ padding: 24, maxWidth: 1100, lineHeight: 1.4 }}>
       <h1>Ajustes · General</h1>
-      <p>Define aquí las <strong>restricciones globales</strong> y administra los <strong>salones</strong>.</p>
-
+      <p>Define aquí las <strong>restricciones por turno</strong> y administra los <strong>salones</strong>.</p>
       {error && <p style={{ color: "crimson" }}>⚠️ {error}</p>}
       {loading ? <p>Cargando…</p> : (
         <>
@@ -125,28 +97,22 @@ export default function SettingsPage() {
                   value={settings.slot_length_minutes}
                   onChange={(e) => setSettings({ ...settings, slot_length_minutes: parseInt(e.target.value || "30", 10) })} />
               </div>
+
               <div>
-                <label>Inicio del día</label>
-                <input type="time"
-                  value={settings.day_start}
-                  onChange={(e) => setSettings({ ...settings, day_start: e.target.value })} />
+                <label>Inicio Matutino</label>
+                <input type="time" value={settings.start_matutino} onChange={(e) => setSettings({ ...settings, start_matutino: e.target.value })} />
               </div>
               <div>
-                <label>Fin del día</label>
-                <input type="time"
-                  value={settings.day_end}
-                  onChange={(e) => setSettings({ ...settings, day_end: e.target.value })} />
+                <label>Inicio Vespertino</label>
+                <input type="time" value={settings.start_vespertino} onChange={(e) => setSettings({ ...settings, start_vespertino: e.target.value })} />
               </div>
               <div>
-                <label>Días activos</label>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  {[1,2,3,4,5,6].map((d) => (
-                    <label key={d} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-                      <input type="checkbox" checked={settings.days_active.includes(d)} onChange={() => toggleDay(d)} />
-                      {dayLabel(d)}
-                    </label>
-                  ))}
-                </div>
+                <label>Inicio Sabatino</label>
+                <input type="time" value={settings.start_sabatino} onChange={(e) => setSettings({ ...settings, start_sabatino: e.target.value })} />
+              </div>
+              <div>
+                <label>Inicio Dominical</label>
+                <input type="time" value={settings.start_dominical} onChange={(e) => setSettings({ ...settings, start_dominical: e.target.value })} />
               </div>
             </div>
             <div style={{ marginTop: 12 }}>
