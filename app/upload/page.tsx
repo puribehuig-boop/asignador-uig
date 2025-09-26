@@ -158,6 +158,10 @@ A003,Ana Ruiz,ENG110,Inglés I,sabatino`}
             <li>Elegibilidades upserted: {result.summary.eligibilities_upserted}</li>
           </ul>
         </div>
+      
+      <div style={{ marginTop: 16 }}>
+        <a href="/" style={{ textDecoration: "underline" }}>← Regresar a la página principal</a>
+      </div>
       )}
     </main>
   );
