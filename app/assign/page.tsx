@@ -36,9 +36,18 @@ export default function AssignPage() {
           <strong>Ajustes vigentes</strong>
           <ul style={{ margin: 0 }}>
             <li>Máx. materias por alumno: {settings.max_courses_per_student}</li>
-            <li>Tamaño de grupo: {settings.target_group_size}</li>
-            <li>Duración clase: {settings.slot_length_minutes} min</li>
-            <li>Inicio Matutino: {settings.start_matutino} · Vespertino: {settings.start_vespertino} · Sabatino: {settings.start_sabatino} · Dominical: {settings.start_dominical}</li>
+            <li>
+              Matutino: {settings.start_matutino} · {settings.duration_matutino} min · descansos {settings.allow_breaks_matutino ? "permitidos" : "no"}
+            </li>
+            <li>
+              Vespertino: {settings.start_vespertino} · {settings.duration_vespertino} min · descansos {settings.allow_breaks_vespertino ? "permitidos" : "no"}
+            </li>
+            <li>
+              Sabatino: {settings.start_sabatino} · {settings.duration_sabatino} min · descansos {settings.allow_breaks_sabatino ? "permitidos" : "no"}
+            </li>
+            <li>
+              Dominical: {settings.start_dominical} · {settings.duration_dominical} min · descansos {settings.allow_breaks_dominical ? "permitidos" : "no"}
+            </li>
           </ul>
         </div>
       )}
