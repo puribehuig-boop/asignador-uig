@@ -81,7 +81,7 @@ export async function POST() {
 
     // Generar N slots consecutivos por día desde la hora de inicio
     const timeSlotsByShift: Record<Shift, { day: number; start: number; end: number; index: number }[]> = {
-      matutino: [], vespertino: [], sabatino: [], dominional: []
+      matutino: [], vespertino: [], sabatino: [], dominical: []
     } as any;
     (["matutino","vespertino","sabatino","dominical"] as Shift[]).forEach(shift => {
       const start0 = startByShift[shift];
