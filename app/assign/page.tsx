@@ -154,35 +154,42 @@ export default function AssignPage() {
             </>
           )}
 
-          {tab === "alumnos" && (
-            <>
-              <h3 style={{ marginTop: 16 }}>Alumnos asignados (conteo por persona)</h3>
-              <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                <thead>
-                  <tr>
-                    <th style={{ textAlign: "left", borderBottom: "1px solid #ddd", padding: 6 }}>Student ID</th>
-                    <th style={{ textAlign: "left", borderBottom: "1px solid #ddd", padding: 6 }}>Turno</th>
-                    <th style={{ textAlign: "right", borderBottom: "1px solid #ddd", padding: 6 }}>Materias asignadas</th>
+                  {tab === "alumnos" && (
+          <>
+            <h3 style={{ marginTop: 16 }}>Alumnos asignados (conteo por persona)</h3>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr>
+                  <th style={{ textAlign: "left", borderBottom: "1px solid #ddd", padding: 6 }}>Alumno</th>
+                  <th style={{ textAlign: "left", borderBottom: "1px solid #ddd", padding: 6 }}>Turno</th>
+                  <th style={{ textAlign: "right", borderBottom: "1px solid #ddd", padding: 6 }}>Asignadas/Disponibles</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.students_overview?.map((s: any) => (
+                  <tr key={s.student_id}>
+                    <td style={{ padding: 6, borderBottom: "1px solid #f0f0f0" }}>
+                      {s.student_name || "(sin nombre)"}<div style={{ color:"#888", fontSize:12 }}>{s.student_id}</div>
+                    </td>
+                    <td style={{ padding: 6, borderBottom: "1px solid #f0f0f0", textTransform: "capitalize" }}>
+                      {s.shift || "—"}
+                    </td>
+                    <td style={{ padding: 6, textAlign: "right", borderBottom: "1px solid #f0f0f0" }}>
+                      {s.assignments}/{s.eligible}
+                    </td>
                   </tr>
-                </thead>
-                <tbody>
-                  {data.students_overview?.map((s: any) => (
-                    <tr key={s.student_id}>
-                      <td style={{ padding: 6, borderBottom: "1px solid #f0f0f0" }}>{s.student_id}</td>
-                      <td style={{ padding: 6, borderBottom: "1px solid #f0f0f0", textTransform: "capitalize" }}>{s.shift || "—"}</td>
-                      <td style={{ padding: 6, textAlign: "right", borderBottom: "1px solid #f0f0f0" }}>{s.assignments}</td>
-                    </tr>
-                  ))}
-                  {(!data.students_overview || data.students_overview.length === 0) && (
-                    <tr><td colSpan={3} style={{ padding: 6 }}>Sin datos</td></tr>
-                  )}
-                </tbody>
-              </table>
-              <p style={{ color: "#666", marginTop: 8 }}>
-                Nota: se listan todos los alumnos con elegibilidades (incluyendo quienes quedaron con 0 asignaciones).
-              </p>
-            </>
-          )}
+                ))}
+                {(!data.students_overview || data.students_overview.length === 0) && (
+                  <tr><td colSpan={3} style={{ padding: 6 }}>Sin datos</td></tr>
+                )}
+              </tbody>
+            </table>
+            <p style={{ color: "#666", marginTop: 8 }}>
+              "Disponibles" refleja cuántas materias eran elegibles para la persona según el CSV cargado.
+            </p>
+          </>
+        )}
+
         </>
       )}
     </main>
