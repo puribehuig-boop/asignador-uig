@@ -1,11 +1,55 @@
 "use client";
 import { useState } from "react";
+import Papa from "papaparse";
+
+type PreviewRow = Record<string, string | number | null | undefined>;
 
 export default function UploadPage() {
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const [previewHeaders, setPreviewHeaders] = useState<string[]>([]);
+  const [previewRows, setPreviewRows] = useState<PreviewRow[] | null>(null);
+
+  const parsePreview = async (f: File) => {
+    setPreviewRows(null);
+    setPreviewHeaders([]);
+    await new Promise<void>((resolve, reject) => {
+      Papa.parse<PreviewRow>(f, {
+        header: true,
+        skipEmptyLines: true,
+        preview: 10, // <- sólo primeras 10 filas
+        complete: (res) => {
+          const rows = (res.data as PreviewRow[]) ?? [];
+          const headers = rows.length ? Object.keys(rows[0]) : [];
+          setPreviewRows(rows);
+          setPreviewHeaders(headers);
+          resolve();
+        },
+        error: (err) => reject(err),
+      });
+    });
+  };
+
+  const onFileChange = async (f: File | null) => {
+    setFile(f);
+    setResult(null);
+    setError(null);
+    if (f) {
+      try {
+        await parsePreview(f);
+      } catch (e: any) {
+        setPreviewRows(null);
+        setPreviewHeaders([]);
+        setError(e?.message || "No se pudo leer el archivo para previsualización");
+      }
+    } else {
+      setPreviewRows(null);
+      setPreviewHeaders([]);
+    }
+  };
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -18,16 +62,22 @@ export default function UploadPage() {
       fd.append("filename", file.name);
       const res = await fetch("/api/upload", { method: "POST", body: fd });
       const json = await res.json();
-      if (!res.ok) throw new Error(json?.error || "Error al subir");
+      if (!res.ok || !json.ok) throw new Error(json?.error || "Error al subir");
       setResult(json);
-    } catch (err: any) { setError(err.message || "Error desconocido"); }
-    finally { setLoading(false); }
+      // (Opcional) ya tenemos preview local; si quisieras, aquí podrías refrescarla
+    } catch (err: any) {
+      setError(err.message || "Error desconocido");
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
-    <main style={{ padding: 24, lineHeight: 1.4, maxWidth: 720 }}>
+    <main style={{ padding: 24, lineHeight: 1.4, maxWidth: 900 }}>
       <h1>Subir CSV de ELEGIBILIDADES (alumno → materias posibles)</h1>
-      <p>Este CSV <strong>NO</strong> asigna alumnos; solo registra elegibilidades y el <strong>turno del alumno</strong>.</p>
+      <p>
+        Este CSV <strong>NO</strong> asigna alumnos; solo registra elegibilidades y el <strong>turno del alumno</strong>.
+      </p>
       <p>Encabezados requeridos (exactos): <code>student_code,student_name,course_code,course_name,turno</code></p>
       <pre style={{ background: "#f5f5f5", padding: 12, overflow: "auto" }}>
 {`student_code,student_name,course_code,course_name,turno
@@ -38,16 +88,56 @@ A003,Ana Ruiz,ENG110,Inglés I,sabatino`}
       </pre>
 
       <form onSubmit={onSubmit} style={{ marginTop: 16 }}>
-        <input type="file" accept=".csv,text/csv" onChange={(e) => setFile(e.target.files?.[0] || null)} />
+        <input
+          type="file"
+          accept=".csv,text/csv"
+          onChange={(e) => onFileChange(e.target.files?.[0] || null)}
+        />
         <div style={{ marginTop: 12 }}>
-          <button disabled={loading || !file} type="submit">{loading ? "Subiendo..." : "Subir CSV"}</button>
+          <button disabled={loading || !file} type="submit">
+            {loading ? "Subiendo..." : "Subir CSV"}
+          </button>
         </div>
       </form>
+
+      {/* Preview local (primeras 10 filas) */}
+      {previewRows && (
+        <div style={{ marginTop: 16 }}>
+          <h3 style={{ marginBottom: 8 }}>Vista previa (10 primeras filas)</h3>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ minWidth: 700, borderCollapse: "collapse" }}>
+              <thead>
+                <tr>
+                  {previewHeaders.map((h) => (
+                    <th key={h} style={{ textAlign: "left", borderBottom: "1px solid #ddd", padding: 6 }}>
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {previewRows.map((r, i) => (
+                  <tr key={i}>
+                    {previewHeaders.map((h) => (
+                      <td key={h} style={{ borderBottom: "1px solid #f0f0f0", padding: 6 }}>
+                        {String(r[h] ?? "")}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+                {previewRows.length === 0 && (
+                  <tr><td colSpan={previewHeaders.length} style={{ padding: 6, color: "#888" }}>Sin filas</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {error && <p style={{ color: "crimson", marginTop: 12 }}>⚠️ {error}</p>}
 
       {result?.ok && (
-        <div style={{ marginTop: 16, background: "#eefbf0", padding: 12 }}>
+        <div style={{ marginTop: 16, background: "#eefbf0", padding: 12, borderRadius: 8 }}>
           <h3>Resumen de carga</h3>
           <ul>
             <li>Archivo: {result.file?.filename}</li>
