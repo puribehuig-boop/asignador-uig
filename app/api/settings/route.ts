@@ -8,31 +8,29 @@ const SettingsSchema = z.object({
   max_courses_per_student: z.coerce.number().int().min(1).max(20),
   target_group_size: z.coerce.number().int().min(5).max(150),
   slot_length_minutes: z.coerce.number().int().min(30).max(240),
-  day_start: z.string().regex(/^\d{2}:\d{2}$/), // HH:MM
-  day_end: z.string().regex(/^\d{2}:\d{2}$/),
-  days_active: z.array(z.number().int().min(1).max(7)).nonempty(),
+  start_matutino: z.string().regex(/^\d{2}:\d{2}$/),
+  start_vespertino: z.string().regex(/^\d{2}:\d{2}$/),
+  start_sabatino: z.string().regex(/^\d{2}:\d{2}$/),
+  start_dominical: z.string().regex(/^\d{2}:\d{2}$/),
 });
 
 const DEFAULTS = {
   max_courses_per_student: 5,
   target_group_size: 30,
   slot_length_minutes: 90,
-  day_start: "07:00",
-  day_end: "21:00",
-  days_active: [1,2,3,4,5],
+  start_matutino: "07:00",
+  start_vespertino: "16:00",
+  start_sabatino: "08:00",
+  start_dominical: "08:00",
 };
 
 export async function GET() {
-  const { data, error } = await supabaseAdmin
+  const { data } = await supabaseAdmin
     .from("system_settings")
     .select("settings")
     .eq("id", "general")
     .single();
-
-  if (error || !data?.settings) {
-    return NextResponse.json({ ok: true, settings: DEFAULTS, from: "defaults" });
-  }
-  return NextResponse.json({ ok: true, settings: data.settings, from: "db" });
+  return NextResponse.json({ ok: true, settings: data?.settings ?? DEFAULTS });
 }
 
 export async function POST(req: Request) {
@@ -46,7 +44,6 @@ export async function POST(req: Request) {
     const { error } = await supabaseAdmin
       .from("system_settings")
       .upsert({ id: "general", settings: payload, updated_at: new Date().toISOString() });
-
     if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
     return NextResponse.json({ ok: true, settings: payload });
   } catch (e: any) {
