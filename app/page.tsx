@@ -7,7 +7,7 @@ export default function Home() {
   useEffect(() => {
     (async () => {
       try {
-        const res = await fetch("/api/uploads/last");
+        const res = await fetch("/api/uploads/last", { cache: "no-store" }); // 👈 importante
         const json = await res.json();
         if (json?.ok) setLast(json.last);
       } catch {}
@@ -38,7 +38,7 @@ export default function Home() {
               <div style={{ marginTop: 6, color: "#888" }}>Sin carga de archivo</div>
             )}
           </div>
-        </li>
+        </li
 
         <li style={{ border: "1px solid #eee", borderRadius: 12, padding: 16 }}>
           <div style={{ fontSize: 12, color: "#888" }}>Paso 2</div>
