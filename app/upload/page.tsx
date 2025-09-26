@@ -4,6 +4,16 @@ import Papa from "papaparse";
 
 type PreviewRow = Record<string, string | number | null | undefined>;
 
+const normalizeHeader = (h: string) => {
+  const raw = (h ?? "").toString().replace(/\uFEFF/g, "").trim().toLowerCase();
+  const noAccent = raw.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  const key = noAccent.replace(/\s+/g, "_");
+  // sinónimos comunes
+  if (key === "shift") return "turno";
+  if (key === "turnos") return "turno";
+  return key;
+};
+
 export default function UploadPage() {
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
@@ -20,10 +30,11 @@ export default function UploadPage() {
       Papa.parse<PreviewRow>(f, {
         header: true,
         skipEmptyLines: true,
-        preview: 10, // <- sólo primeras 10 filas
+        preview: 10,
+        transformHeader: normalizeHeader,
         complete: (res) => {
           const rows = (res.data as PreviewRow[]) ?? [];
-          const headers = rows.length ? Object.keys(rows[0]) : [];
+          const headers = rows.length ? Object.keys(rows[0]) : (res.meta.fields || []).map(String);
           setPreviewRows(rows);
           setPreviewHeaders(headers);
           resolve();
@@ -64,7 +75,6 @@ export default function UploadPage() {
       const json = await res.json();
       if (!res.ok || !json.ok) throw new Error(json?.error || "Error al subir");
       setResult(json);
-      // (Opcional) ya tenemos preview local; si quisieras, aquí podrías refrescarla
     } catch (err: any) {
       setError(err.message || "Error desconocido");
     } finally {
@@ -72,13 +82,13 @@ export default function UploadPage() {
     }
   };
 
+  const hasTurno = previewHeaders.includes("turno");
+
   return (
     <main style={{ padding: 24, lineHeight: 1.4, maxWidth: 900 }}>
       <h1>Subir CSV de ELEGIBILIDADES (alumno → materias posibles)</h1>
-      <p>
-        Este CSV <strong>NO</strong> asigna alumnos; solo registra elegibilidades y el <strong>turno del alumno</strong>.
-      </p>
-      <p>Encabezados requeridos (exactos): <code>student_code,student_name,course_code,course_name,turno</code></p>
+      <p>Encabezados esperados (normalizamos mayúsculas/espacios/acentos): <code>student_code, student_name, course_code, course_name, turno</code></p>
+
       <pre style={{ background: "#f5f5f5", padding: 12, overflow: "auto" }}>
 {`student_code,student_name,course_code,course_name,turno
 A001,María López,MAT101,Álgebra I,matutino
@@ -88,15 +98,9 @@ A003,Ana Ruiz,ENG110,Inglés I,sabatino`}
       </pre>
 
       <form onSubmit={onSubmit} style={{ marginTop: 16 }}>
-        <input
-          type="file"
-          accept=".csv,text/csv"
-          onChange={(e) => onFileChange(e.target.files?.[0] || null)}
-        />
+        <input type="file" accept=".csv,text/csv" onChange={(e) => onFileChange(e.target.files?.[0] || null)} />
         <div style={{ marginTop: 12 }}>
-          <button disabled={loading || !file} type="submit">
-            {loading ? "Subiendo..." : "Subir CSV"}
-          </button>
+          <button disabled={loading || !file} type="submit">{loading ? "Subiendo..." : "Subir CSV"}</button>
         </div>
       </form>
 
@@ -104,14 +108,20 @@ A003,Ana Ruiz,ENG110,Inglés I,sabatino`}
       {previewRows && (
         <div style={{ marginTop: 16 }}>
           <h3 style={{ marginBottom: 8 }}>Vista previa (10 primeras filas)</h3>
+
+          {!hasTurno && (
+            <p style={{ color: "crimson" }}>
+              ⚠️ No se detectó la columna <code>turno</code> en los encabezados (encontrados: {previewHeaders.join(", ") || "ninguno"}).
+              Aceptamos también <code>Shift</code> o <code>Turnos</code> (se mapean a <code>turno</code>).
+            </p>
+          )}
+
           <div style={{ overflowX: "auto" }}>
             <table style={{ minWidth: 700, borderCollapse: "collapse" }}>
               <thead>
                 <tr>
                   {previewHeaders.map((h) => (
-                    <th key={h} style={{ textAlign: "left", borderBottom: "1px solid #ddd", padding: 6 }}>
-                      {h}
-                    </th>
+                    <th key={h} style={{ textAlign: "left", borderBottom: "1px solid #ddd", padding: 6 }}>{h}</th>
                   ))}
                 </tr>
               </thead>
