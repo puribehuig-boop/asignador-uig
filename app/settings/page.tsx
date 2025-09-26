@@ -3,10 +3,11 @@ import { useEffect, useState } from "react";
 
 type Settings = {
   max_courses_per_student: number;
-  start_matutino: string;  duration_matutino: number;  allow_breaks_matutino: boolean;
-  start_vespertino: string; duration_vespertino: number; allow_breaks_vespertino: boolean;
-  start_sabatino: string;   duration_sabatino: number;   allow_breaks_sabatino: boolean;
-  start_dominical: string;  duration_dominical: number;  allow_breaks_dominical: boolean;
+
+  start_matutino: string;  duration_matutino: number;  allow_breaks_matutino: boolean;  slots_per_day_matutino: number;
+  start_vespertino: string; duration_vespertino: number; allow_breaks_vespertino: boolean; slots_per_day_vespertino: number;
+  start_sabatino: string;   duration_sabatino: number;   allow_breaks_sabatino: boolean;  slots_per_day_sabatino: number;
+  start_dominical: string;  duration_dominical: number;  allow_breaks_dominical: boolean; slots_per_day_dominical: number;
 };
 
 type Room = { id: string; code: string; name: string | null; capacity: number };
@@ -19,10 +20,11 @@ export default function SettingsPage() {
 
   const [settings, setSettings] = useState<Settings>({
     max_courses_per_student: 5,
-    start_matutino: "07:00", duration_matutino: 90, allow_breaks_matutino: true,
-    start_vespertino: "16:00", duration_vespertino: 90, allow_breaks_vespertino: true,
-    start_sabatino: "08:00", duration_sabatino: 90, allow_breaks_sabatino: true,
-    start_dominical: "08:00", duration_dominical: 90, allow_breaks_dominical: true,
+
+    start_matutino: "07:00", duration_matutino: 90, allow_breaks_matutino: true, slots_per_day_matutino: 5,
+    start_vespertino: "16:00", duration_vespertino: 90, allow_breaks_vespertino: true, slots_per_day_vespertino: 4,
+    start_sabatino: "08:00", duration_sabatino: 90, allow_breaks_sabatino: true, slots_per_day_sabatino: 4,
+    start_dominical: "08:00", duration_dominical: 90, allow_breaks_dominical: true, slots_per_day_dominical: 4,
   });
 
   const [rooms, setRooms] = useState<Room[]>([]);
@@ -51,14 +53,10 @@ export default function SettingsPage() {
       });
       const json = await res.json();
       if (!json.ok) throw new Error(json.error || "Error al guardar ajustes");
-      setSavedOk(true); // mostrar confirmación
-      // ocultar confirmación después de 2.5s
-      setTimeout(() => setSavedOk(false), 2500);
-    } catch (e: any) {
-      setError(e?.message || "Error");
-    } finally {
-      setSaving(false);
-    }
+      setSavedOk(true);
+      setTimeout(() => setSavedOk(false), 2000);
+    } catch (e: any) { setError(e?.message || "Error"); }
+    finally { setSaving(false); }
   };
 
   const createOrUpdateRoom = async (payload: Partial<Room> & { code: string; capacity: number }) => {
@@ -72,13 +70,13 @@ export default function SettingsPage() {
   };
 
   const ShiftCard = ({
-    title, startKey, durKey, breakKey
+    title, startKey, durKey, breakKey, slotsKey
   }: {
-    title: string; startKey: keyof Settings; durKey: keyof Settings; breakKey: keyof Settings;
+    title: string; startKey: keyof Settings; durKey: keyof Settings; breakKey: keyof Settings; slotsKey: keyof Settings;
   }) => (
     <div style={{ border: "1px solid #eee", borderRadius: 12, padding: 12 }}>
       <h3 style={{ marginTop: 0 }}>{title}</h3>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0,1fr))", gap: 12 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0,1fr))", gap: 12 }}>
         <div>
           <label>Hora de inicio</label>
           <input type="time" value={(settings as any)[startKey]}
@@ -88,6 +86,11 @@ export default function SettingsPage() {
           <label>Duración de clase (min)</label>
           <input type="number" min={30} step={15} value={(settings as any)[durKey]}
             onChange={(e) => setSettings({ ...settings, [durKey]: parseInt(e.target.value || "30", 10) } as Settings)} />
+        </div>
+        <div>
+          <label>Clases por día</label>
+          <input type="number" min={1} max={12} value={(settings as any)[slotsKey]}
+            onChange={(e) => setSettings({ ...settings, [slotsKey]: parseInt(e.target.value || "1", 10) } as Settings)} />
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <input
@@ -105,7 +108,7 @@ export default function SettingsPage() {
   return (
     <main style={{ padding: 24, maxWidth: 1100, lineHeight: 1.4 }}>
       <h1>Ajustes · General</h1>
-      <p>Define <strong>restricciones por turno</strong> y administra los <strong>salones</strong>.</p>
+      <p>Define restricciones por turno y administra los salones.</p>
 
       {error && <p style={{ color: "crimson" }}>⚠️ {error}</p>}
       {savedOk && <p style={{ color: "green" }}>✓ Ajustes guardados</p>}
@@ -126,10 +129,10 @@ export default function SettingsPage() {
             </div>
 
             <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0,1fr))", gap: 12 }}>
-              <ShiftCard title="Matutino"  startKey="start_matutino"  durKey="duration_matutino"  breakKey="allow_breaks_matutino" />
-              <ShiftCard title="Vespertino" startKey="start_vespertino" durKey="duration_vespertino" breakKey="allow_breaks_vespertino" />
-              <ShiftCard title="Sabatino"   startKey="start_sabatino"   durKey="duration_sabatino"   breakKey="allow_breaks_sabatino" />
-              <ShiftCard title="Dominical"  startKey="start_dominical"  durKey="duration_dominical"  breakKey="allow_breaks_dominical" />
+              <ShiftCard title="Matutino"  startKey="start_matutino"  durKey="duration_matutino"  breakKey="allow_breaks_matutino"  slotsKey="slots_per_day_matutino" />
+              <ShiftCard title="Vespertino" startKey="start_vespertino" durKey="duration_vespertino" breakKey="allow_breaks_vespertino" slotsKey="slots_per_day_vespertino" />
+              <ShiftCard title="Sabatino"   startKey="start_sabatino"   durKey="duration_sabatino"   breakKey="allow_breaks_sabatino"  slotsKey="slots_per_day_sabatino" />
+              <ShiftCard title="Dominical"  startKey="start_dominical"  durKey="duration_dominical"  breakKey="allow_breaks_dominical" slotsKey="slots_per_day_dominical" />
             </div>
 
             <div style={{ marginTop: 12 }}>
