@@ -4,24 +4,46 @@ import { supabaseAdmin } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
 
+const HHMM = /^\d{2}:\d{2}$/;
+
 const SettingsSchema = z.object({
   max_courses_per_student: z.coerce.number().int().min(1).max(20),
-  target_group_size: z.coerce.number().int().min(5).max(150),
-  slot_length_minutes: z.coerce.number().int().min(30).max(240),
-  start_matutino: z.string().regex(/^\d{2}:\d{2}$/),
-  start_vespertino: z.string().regex(/^\d{2}:\d{2}$/),
-  start_sabatino: z.string().regex(/^\d{2}:\d{2}$/),
-  start_dominical: z.string().regex(/^\d{2}:\d{2}$/),
+
+  start_matutino: z.string().regex(HHMM),
+  duration_matutino: z.coerce.number().int().min(30).max(240),
+  allow_breaks_matutino: z.coerce.boolean(),
+
+  start_vespertino: z.string().regex(HHMM),
+  duration_vespertino: z.coerce.number().int().min(30).max(240),
+  allow_breaks_vespertino: z.coerce.boolean(),
+
+  start_sabatino: z.string().regex(HHMM),
+  duration_sabatino: z.coerce.number().int().min(30).max(240),
+  allow_breaks_sabatino: z.coerce.boolean(),
+
+  start_dominical: z.string().regex(HHMM),
+  duration_dominical: z.coerce.number().int().min(30).max(240),
+  allow_breaks_dominical: z.coerce.boolean(),
 });
 
 const DEFAULTS = {
   max_courses_per_student: 5,
-  target_group_size: 30,
-  slot_length_minutes: 90,
+
   start_matutino: "07:00",
+  duration_matutino: 90,
+  allow_breaks_matutino: true,
+
   start_vespertino: "16:00",
+  duration_vespertino: 90,
+  allow_breaks_vespertino: true,
+
   start_sabatino: "08:00",
+  duration_sabatino: 90,
+  allow_breaks_sabatino: true,
+
   start_dominical: "08:00",
+  duration_dominical: 90,
+  allow_breaks_dominical: true,
 };
 
 export async function GET() {
