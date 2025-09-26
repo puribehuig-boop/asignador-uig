@@ -90,6 +90,85 @@ export async function POST(req: Request) {
     }
     const studentIdByCode = new Map(studentRows.map(r => [r.code, r.id]));
 
-    // Asegurar actualización de shift (porque upsert podría ignorar nulos previos)
-    const updatesShift = students.filter(s => s.shift).map(s => ({ id: studentIdByCode.get(s.code)!, shift: s.shift }));
-    for (const part
+    // Asegurar actualización de shift (null-safe, sin non-null assertion)
+const updatesShift = students
+  .filter((s) => s.shift)
+  .map((s) => {
+    const id = studentIdByCode.get(s.code);
+    return id ? { id, shift: s.shift as string } : null;
+  })
+  .filter((x): x is { id: string; shift: string } => Boolean(x));
+
+for (const part of chunk(updatesShift, 1000)) {
+  if (!part.length) continue;
+  const { error } = await supabaseAdmin
+    .from("students")
+    .upsert(part, { onConflict: "id" });
+  if (error) throw error;
+}
+
+  // UPSERT courses
+    let courseRows: { id: string; code: string }[] = [];
+    for (const part of chunk(courses)) {
+      const { data, error } = await supabaseAdmin
+        .from("courses")
+        .upsert(part, { onConflict: "code" })
+        .select("id, code");
+      if (error) throw error;
+      courseRows = courseRows.concat(data || []);
+    }
+    if (courseRows.length < courses.length) {
+      const { data, error } = await supabaseAdmin.from("courses").select("id, code").in("code", courses.map(c=>c.code));
+      if (error) throw error;
+      courseRows = data || courseRows;
+    }
+    const courseIdByCode = new Map(courseRows.map(r => [r.code, r.id]));
+
+    // Inserta elegibilidades
+    const eligRows = eligPairs.map(({ student_code, course_code }) => {
+      const sid = studentIdByCode.get(student_code);
+      const cid = courseIdByCode.get(course_code);
+      if (!sid || !cid) return null;
+      return { student_id: sid, course_id: cid };
+    }).filter(Boolean) as { student_id: string; course_id: string }[];
+
+    for (const part of chunk(eligRows)) {
+      const { error } = await supabaseAdmin
+        .from("student_eligibilities")
+        .upsert(part, { onConflict: "student_id,course_id" });
+      if (error) throw error;
+    }
+
+    // Guarda metadatos del archivo
+    const { data: rec, error: upErr } = await supabaseAdmin
+      .from("file_uploads")
+      .insert({
+        filename,
+        rows_total: rawRows.length,
+        rows_valid: rows.length,
+        rows_invalid: invalid,
+        students_upserted: students.length,
+        courses_upserted: courses.length,
+        eligibilities_upserted: eligRows.length,
+      })
+      .select("id, filename, uploaded_at")
+      .single();
+    if (upErr) throw upErr;
+
+    return NextResponse.json({
+      ok: true,
+      file: { id: rec.id, filename: rec.filename, uploaded_at: rec.uploaded_at },
+      summary: {
+        rows_total: rawRows.length,
+        rows_valid: rows.length,
+        rows_invalid: invalid,
+        students_upserted: students.length,
+        courses_upserted: courses.length,
+        eligibilities_upserted: eligRows.length,
+      },
+    });
+  } catch (e: any) {
+    console.error(e);
+    return NextResponse.json({ ok: false, error: e.message ?? "Error desconocido" }, { status: 500 });
+  }
+}
