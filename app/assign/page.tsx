@@ -29,7 +29,7 @@ export default function AssignPage() {
   return (
     <main style={{ padding: 24, lineHeight: 1.4, maxWidth: 1100 }}>
       <h1>Asignación · Vista previa</h1>
-      <p>Usa los <a href="/settings" style={{ textDecoration: "underline" }}>Ajustes (General)</a> para modificar restricciones y salones.</p>
+      <p>Usa <a href="/settings" style={{ textDecoration: "underline" }}>Ajustes (General)</a> para cambiar restricciones y salones.</p>
 
       {settings && (
         <div style={{ marginTop: 12, padding: 12, background: "#f7f9ff", borderRadius: 12 }}>
@@ -38,8 +38,7 @@ export default function AssignPage() {
             <li>Máx. materias por alumno: {settings.max_courses_per_student}</li>
             <li>Tamaño de grupo: {settings.target_group_size}</li>
             <li>Duración clase: {settings.slot_length_minutes} min</li>
-            <li>Jornada: {settings.day_start}–{settings.day_end}</li>
-            <li>Días activos: {settings.days_active?.map((d:number)=>["","Lun","Mar","Mié","Jue","Vie","Sáb","Dom"][d]).join(", ")}</li>
+            <li>Inicio Matutino: {settings.start_matutino} · Vespertino: {settings.start_vespertino} · Sabatino: {settings.start_sabatino} · Dominical: {settings.start_dominical}</li>
           </ul>
         </div>
       )}
@@ -67,6 +66,7 @@ export default function AssignPage() {
             <thead>
               <tr>
                 <th style={{ textAlign: "left", borderBottom: "1px solid #ddd", padding: 6 }}>Curso</th>
+                <th style={{ textAlign: "left", borderBottom: "1px solid #ddd", padding: 6 }}>Turno</th>
                 <th style={{ textAlign: "left", borderBottom: "1px solid #ddd", padding: 6 }}>Grupo</th>
                 <th style={{ textAlign: "left", borderBottom: "1px solid #ddd", padding: 6 }}>Salón</th>
                 <th style={{ textAlign: "left", borderBottom: "1px solid #ddd", padding: 6 }}>Día</th>
@@ -81,6 +81,7 @@ export default function AssignPage() {
               {data.scheduled_groups.map((g: any, i: number) => (
                 <tr key={i}>
                   <td style={{ padding: 6, borderBottom: "1px solid #f0f0f0" }}>{g.course_code}</td>
+                  <td style={{ padding: 6, borderBottom: "1px solid #f0f0f0", textTransform: "capitalize" }}>{g.turno}</td>
                   <td style={{ padding: 6, borderBottom: "1px solid #f0f0f0" }}>G{g.group_index}</td>
                   <td style={{ padding: 6, borderBottom: "1px solid #f0f0f0" }}>{g.room}</td>
                   <td style={{ padding: 6, borderBottom: "1px solid #f0f0f0" }}>{["","Lun","Mar","Mié","Jue","Vie","Sáb","Dom"][g.day_of_week]}</td>
