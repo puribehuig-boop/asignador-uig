@@ -182,7 +182,7 @@ export async function POST() {
       }
     }
 
-    // ========= 4) ASIGNACIÓN ALUMNO->GRUPO (llenado por slot) =========
+    // ========= 4) ASIGNACIÓN ALUMNO->GRUPO (máximo flujo por slot) =========
     // índice de grupos por (shift|day|start)
     const groupsByKey = new Map<string, typeof scheduledGroups>(); // key: `${shift}|${day}|${start}`
     for (const g of scheduledGroups) {
@@ -192,12 +192,13 @@ export async function POST() {
       groupsByKey.set(k, arr);
     }
 
+    // capacidad restante por grupo
     const remCap = new Map<string, number>();
     for (const g of scheduledGroups) remCap.set(g.ephemeral_id, g.capacity);
 
     const studentSchedule = new Map<string, Meeting[]>();             // agenda por alumno
     const studentLoad = new Map<string, number>();                    // materias asignadas por alumno
-    const assignedCoursesByStudent = new Map<string, Set<string>>();  // *** NUEVO: cursos ya tomados por alumno ***
+    const assignedCoursesByStudent = new Map<string, Set<string>>();  // no repetir materia
     const proposed: { student_id: string; course_id: string; ephemeral_group_id: string }[] = [];
 
     // alumnos por turno (orden: menos elegibles primero)
@@ -226,72 +227,186 @@ export async function POST() {
         a.start - b.start,
     );
 
+    // Dinic (flujo máximo) -----------------------------------------------
+    type Edge = { to: number; rev: number; cap: number };
+    function makeGraph(n: number) {
+      const g: Edge[][] = Array.from({ length: n }, () => []);
+      function addEdge(u: number, v: number, cap: number) {
+        const a: Edge = { to: v, rev: g[v].length, cap };
+        const b: Edge = { to: u, rev: g[u].length, cap: 0 };
+        g[u].push(a); g[v].push(b);
+      }
+      function bfs(s: number, t: number, level: number[]) {
+        level.fill(-1); const q: number[] = [];
+        level[s] = 0; q.push(s);
+        while (q.length) {
+          const u = q.shift()!;
+          for (const e of g[u]) if (e.cap > 0 && level[e.to] < 0) {
+            level[e.to] = level[u] + 1; q.push(e.to);
+          }
+        }
+        return level[t] >= 0;
+      }
+      function dfs(u: number, t: number, f: number, level: number[], it: number[]): number {
+        if (u === t) return f;
+        for (let i = it[u]; i < g[u].length; i++, it[u] = i) {
+          const e = g[u][i];
+          if (e.cap > 0 && level[u] < level[e.to]) {
+            const d = dfs(e.to, t, Math.min(f, e.cap), level, it);
+            if (d > 0) {
+              e.cap -= d;
+              g[e.to][e.rev].cap += d;
+              return d;
+            }
+          }
+        }
+        return 0;
+      }
+      function maxflow(s: number, t: number) {
+        let flow = 0;
+        const level = new Array(n).fill(-1);
+        while (bfs(s, t, level)) {
+          const it = new Array(n).fill(0);
+          let f: number;
+          while ((f = dfs(s, t, 1e9, level, it)) > 0) flow += f;
+        }
+        return flow;
+      }
+      return { g, addEdge, maxflow };
+    }
+    // ---------------------------------------------------------------------
+
     for (const slot of slotsChrono) {
       const k = `${slot.shift}|${slot.day}|${slot.start}`;
-      const groupsHere = (groupsByKey.get(k) || [])
-        .slice()
-        .sort((g1, g2) => (remCap.get(g2.ephemeral_id)! - remCap.get(g1.ephemeral_id)!));
+      const groupsHere = (groupsByKey.get(k) || []).filter(g => (remCap.get(g.ephemeral_id) || 0) > 0);
       if (groupsHere.length === 0) continue;
 
       const allowBreaks = allowBreaksByShift[slot.shift];
       const studentIds = studentsByShift[slot.shift];
 
+      // 1) Lista de alumnos candidatos para este slot (cumplen restricciones globales)
+      const candStudents: string[] = [];
+      const allowedLoadByStudent = new Map<string, number>();
       for (const sid of studentIds) {
         const eligSet = eligByStudent.get(sid) || new Set<string>();
-        const allowedLoad = Math.min(maxCoursesPerStudent, eligSet.size); // *** NUEVO: no más que elegibles únicos ***
-
+        const allowedLoad = Math.min(maxCoursesPerStudent, eligSet.size);
         if ((studentLoad.get(sid) || 0) >= allowedLoad) continue;
 
         let sched = studentSchedule.get(sid) || [];
+        // “sin descanso”: si ya tiene algo este día, sólo contiguo al bloque
         const daySched = sched.filter((s) => s.day === slot.day);
         const requireContiguous = !allowBreaks && daySched.length > 0;
         let minStart = Infinity, maxEnd = -Infinity;
         if (requireContiguous) {
-          for (const s of daySched) {
-            if (s.start < minStart) minStart = s.start;
-            if (s.end > maxEnd) maxEnd = s.end;
-          }
+          for (const s of daySched) { if (s.start < minStart) minStart = s.start; if (s.end > maxEnd) maxEnd = s.end; }
         }
 
-        const takenCourses = assignedCoursesByStudent.get(sid) || new Set<string>();
+        // Checar si *podría* tomar algo en este slot (independiente del curso)
+        // (mismo horario prohibido con su propia agenda es irrelevante aquí porque es “este mismo slot”)
+        if (requireContiguous) {
+          const contiguous = (slot.start + durationByShift[slot.shift] === minStart) || (slot.start === maxEnd);
+          if (!contiguous) continue;
+        }
+        allowedLoadByStudent.set(sid, allowedLoad);
+        candStudents.push(sid);
+      }
+      if (candStudents.length === 0) continue;
 
-        for (const g of groupsHere) {
-          if ((remCap.get(g.ephemeral_id) || 0) <= 0) continue;
+      // 2) Armar red de flujo: source -> alumnos -> grupos -> sink
+      //    (cap alumno = 1, cap grupo = capacidad restante)
+      const N = candStudents.length;
+      const M = groupsHere.length;
+      const SRC = 0;
+      const SNK = 1 + N + M;
+      const { g, addEdge, maxflow } = makeGraph(SNK + 1);
 
-          // Debe ser elegible
-          if (!eligSet.has(g.course_id)) continue;
+      // mapear índices
+      const studentIndex = new Map<string, number>(); // id -> 0..N-1
+      candStudents.forEach((sid, i) => studentIndex.set(sid, i));
+      const groupIndex = new Map<string, number>();   // ephemeral_id -> 0..M-1
+      groupsHere.forEach((gr, j) => groupIndex.set(gr.ephemeral_id, j));
 
-          // *** RESTRICCIÓN NUEVA: no repetir misma materia ***
-          if (takenCourses.has(g.course_id)) continue;
+      // source -> alumnos
+      for (let i = 0; i < N; i++) {
+        addEdge(SRC, 1 + i, 1);
+      }
+      // grupos -> sink (con cap restante)
+      for (let j = 0; j < M; j++) {
+        const gr = groupsHere[j];
+        const capRem = remCap.get(gr.ephemeral_id) || 0;
+        if (capRem > 0) addEdge(1 + N + j, SNK, capRem);
+      }
 
-          // misma hora exacta prohibida
-          const sameHour = sched.some((s) => s.day === g.meeting.day && s.start === g.meeting.start);
+      // alumnos -> grupos (si elegible, no repetida, respeta “sin descanso” y no solapa agenda)
+      for (const sid of candStudents) {
+        const i = studentIndex.get(sid)!;
+        const eligSet = eligByStudent.get(sid) || new Set<string>();
+        const taken = assignedCoursesByStudent.get(sid) || new Set<string>();
+        const sched = studentSchedule.get(sid) || [];
+
+        for (const gr of groupsHere) {
+          if (!eligSet.has(gr.course_id)) continue;
+          if (taken.has(gr.course_id)) continue;
+
+          // misma hora exacta prohibida (ya la checa “una por slot”, pero mantenemos)
+          const sameHour = sched.some((s) => s.day === gr.meeting.day && s.start === gr.meeting.start);
           if (sameHour) continue;
 
-          // no solapamiento
-          const hasOverlap = sched.some((s) => overlap(s, g.meeting));
+          // no solape
+          const hasOverlap = sched.some((s) => overlap(s, gr.meeting));
           if (hasOverlap) continue;
 
-          // sin descanso (si aplica): contiguo al bloque del día
-          if (requireContiguous) {
-            const contiguous = g.meeting.end === minStart || g.meeting.start === maxEnd;
-            if (!contiguous) continue;
+          // sin descanso si aplica (sólo contiguo al bloque del día)
+          if (!allowBreaks) {
+            const daySched = sched.filter((s) => s.day === gr.meeting.day);
+            if (daySched.length > 0) {
+              const minStart = Math.min(...daySched.map(s => s.start));
+              const maxEnd   = Math.max(...daySched.map(s => s.end));
+              const contiguous = (gr.meeting.end === minStart) || (gr.meeting.start === maxEnd);
+              if (!contiguous) continue;
+            }
           }
 
-          // Asignar
-          proposed.push({ student_id: sid, course_id: g.course_id, ephemeral_group_id: g.ephemeral_id });
-          remCap.set(g.ephemeral_id, (remCap.get(g.ephemeral_id) || 0) - 1);
-          studentLoad.set(sid, (studentLoad.get(sid) || 0) + 1);
+          const j = groupIndex.get(gr.ephemeral_id)!;
+          addEdge(1 + i, 1 + N + j, 1);
+        }
+      }
 
-          sched = sched.concat([g.meeting]);
-          studentSchedule.set(sid, sched);
+      // 3) Correr flujo y leer emparejamientos usados (edges alumnos->grupos con cap agotada)
+      maxflow(SRC, SNK);
 
-          // marca curso tomado por el alumno (para no repetir materia)
-          if (!assignedCoursesByStudent.has(sid)) assignedCoursesByStudent.set(sid, new Set<string>());
-          assignedCoursesByStudent.get(sid)!.add(g.course_id);
+      // Recorrer alumnos y ver sus edges hacia grupos: si cap==0 => se usó
+      for (let i = 0; i < N; i++) {
+        const sid = candStudents[i];
+        const allowedLoad = allowedLoadByStudent.get(sid)!;
+        if ((studentLoad.get(sid) || 0) >= allowedLoad) continue;
 
-          // solo UNA clase por slot por alumno
-          break;
+        for (const e of g[1 + i]) {
+          // ¿apunta a un grupo?
+          const node = e.to;
+          const j = node - (1 + N);
+          if (j < 0 || j >= M) continue;
+          // si la arista estudiante->grupo quedó con cap 0, se envió flujo (asignación)
+          if (e.cap === 0) {
+            const gr = groupsHere[j];
+
+            // seguridad: aún hay capacidad remanente contada? (el residual ya la consumió, pero mantenemos invariantes)
+            const capRem = remCap.get(gr.ephemeral_id) || 0;
+            if (capRem <= 0) continue;
+
+            // registrar
+            proposed.push({ student_id: sid, course_id: gr.course_id, ephemeral_group_id: gr.ephemeral_id });
+            remCap.set(gr.ephemeral_id, capRem - 1);
+            studentLoad.set(sid, (studentLoad.get(sid) || 0) + 1);
+
+            const newSched = (studentSchedule.get(sid) || []).concat([gr.meeting]);
+            studentSchedule.set(sid, newSched);
+
+            if (!assignedCoursesByStudent.has(sid)) assignedCoursesByStudent.set(sid, new Set<string>());
+            assignedCoursesByStudent.get(sid)!.add(gr.course_id);
+
+            // “una por slot por alumno” se garantiza por cap=1 desde source->alumno
+          }
         }
       }
     }
@@ -401,9 +516,9 @@ export async function POST() {
         proposed_assignments: proposed.length,
       },
       unassigned_by_course: unassignedByCourse,
-      scheduled_groups: groupsUsage,            // para vista "Materias" y horarios por salón
-      students_overview: studentsOverview,      // para vista "Alumnos"
-      assignments_detailed: assignmentsDetailed,// para horarios por alumno
+      scheduled_groups: groupsUsage,            // para "Materias" y horarios por salón
+      students_overview: studentsOverview,      // para "Alumnos"
+      assignments_detailed: assignmentsDetailed,// para "Horarios" (alumno)
       students_catalog: (students ?? []).map((s: any) => ({
         id: s.id as string,
         name: (s.name ?? null) as string | null,
