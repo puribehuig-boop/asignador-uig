@@ -146,6 +146,9 @@ export default function SettingsPage() {
               <ul style={{ margin: 0 }}>
                 <li>Clases se asignan en horarios seguidos (slots consecutivos desde la hora de inicio).</li>
                 <li>Ningún alumno puede tener dos clases a la misma hora.</li>
+                <li>Ningún aula puede tener dos clases a la misma hora.</li>
+                <li>Ningún alumno puede tener clases repetidas.</li>
+                <li>Ningún alumno puede tener mas clases asignadas que disponibles.</li>
               </ul>
             </div>
 
