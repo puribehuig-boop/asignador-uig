@@ -206,6 +206,11 @@ export async function POST() {
         for (const g of gs) {
           if ((remCap.get(g.ephemeral_id) || 0) <= 0) continue;
 
+                    // Prohibición explícita: ningún alumno puede tener dos clases a la misma hora exacta
+          const sameHour = sched.some(s => s.day === g.meeting.day && s.start === g.meeting.start);
+          if (sameHour) continue;
+          
+          // Choque horario (cubre solapamientos parciales o totales)
           const hasOverlap = sched.some(s => overlap(s, g.meeting));
           if (hasOverlap) continue;
 
