@@ -7,34 +7,32 @@ type Shift = "matutino" | "vespertino" | "sabatino" | "dominical";
 type Meeting = { day: number; start: number; end: number; shift: Shift };
 type Room = { id: string; code: string; capacity: number };
 type Course = { id: string; code: string; name: string | null };
-type Student = { id: string; shift: Shift | null };
 
 const SHIFT_DAYS: Record<Shift, number[]> = {
-  matutino: [1,2,3,4,5],      // L-V
-  vespertino: [1,2,3,4,5],    // L-V
-  sabatino: [6],              // Sábado
-  dominical: [7],             // Domingo
+  matutino: [1,2,3,4,5],  // L-V
+  vespertino: [1,2,3,4,5],
+  sabatino: [6],          // Sábado
+  dominical: [7],         // Domingo
 };
 
 function hhmmToMin(hhmm: string) { const [h,m] = hhmm.split(":").map(Number); return (h||0)*60+(m||0); }
 function minToHHMM(m: number) { const h = Math.floor(m/60), mm = m%60; return `${String(h).padStart(2,"0")}:${String(mm).padStart(2,"0")}:00`; }
-function conflict(a: Meeting, b: Meeting) { return a.day===b.day && Math.max(a.start,b.start)<Math.min(a.end,b.end); }
+function overlap(a: Meeting, b: Meeting) { return a.day===b.day && Math.max(a.start,b.start) < Math.min(a.end,b.end); }
 
 export async function POST() {
   try {
-    // 0) Cargar ajustes
+    // 0) Ajustes
     const { data: sRow } = await supabaseAdmin.from("system_settings").select("settings").eq("id","general").single();
     const S = sRow?.settings ?? {
       max_courses_per_student: 5,
-      target_group_size: 30,
-      slot_length_minutes: 90,
-      start_matutino: "07:00",
-      start_vespertino: "16:00",
-      start_sabatino: "08:00",
-      start_dominical: "08:00",
+
+      start_matutino: "07:00", duration_matutino: 90, allow_breaks_matutino: true,
+      start_vespertino: "16:00", duration_vespertino: 90, allow_breaks_vespertino: true,
+      start_sabatino: "08:00", duration_sabatino: 90, allow_breaks_sabatino: true,
+      start_dominical: "08:00", duration_dominical: 90, allow_breaks_dominical: true,
     };
 
-    // 1) Datos base
+    // 1) Datos
     const [{ data: elig }, { data: courses }, { data: rooms }, { data: students }] = await Promise.all([
       supabaseAdmin.from("student_eligibilities").select("student_id, course_id"),
       supabaseAdmin.from("courses").select("id, code, name"),
@@ -44,66 +42,55 @@ export async function POST() {
 
     const coursesArr = (courses ?? []) as Course[];
     const roomsArr = (rooms ?? []) as Room[];
-    const studentShift = new Map((students ?? []).map((s: any) => [s.id, (s.shift ?? null) as Shift | null]));
+    const studentShift = new Map<string, Shift | null>((students ?? []).map((s: any) => [s.id, (s.shift ?? null) as Shift | null]));
 
-    // 2) Demanda total y por turno
-    const demandByCourse = new Map<string, number>();
+    // 2) Demanda por curso y por turno
+    const demandByCourseTotal = new Map<string, number>();
     const demandByCourseShift = new Map<string, Record<Shift, number>>();
     const eligByStudent = new Map<string, string[]>();
 
     for (const row of (elig ?? [])) {
       const sid = row.student_id;
       const cid = row.course_id;
-      const sh = (studentShift.get(sid) || "matutino") as Shift; // default: matutino si no viene
+      const sh = (studentShift.get(sid) || "matutino") as Shift;
 
-      demandByCourse.set(cid, (demandByCourse.get(cid) || 0) + 1);
+      demandByCourseTotal.set(cid, (demandByCourseTotal.get(cid) || 0) + 1);
 
-      const perShift = demandByCourseShift.get(cid) || { matutino:0, vespertino:0, sabatino:0, dominical:0 };
-      perShift[sh] += 1;
-      demandByCourseShift.set(cid, perShift);
+      const ps = demandByCourseShift.get(cid) || { matutino:0, vespertino:0, sabatino:0, dominical:0 };
+      ps[sh] += 1;
+      demandByCourseShift.set(cid, ps);
 
       const arr = eligByStudent.get(sid) || [];
       arr.push(cid);
       eligByStudent.set(sid, arr);
     }
 
-    // 3) Generar slots por turno (un slot por día/turno)
-    const starts: Record<Shift,string> = {
-      matutino: S.start_matutino, vespertino: S.start_vespertino,
-      sabatino: S.start_sabatino, dominical: S.start_dominical
+    // 3) Generar slots por turno (un slot fijo por día del turno)
+    const startByShift: Record<Shift, number> = {
+      matutino: hhmmToMin(S.start_matutino),
+      vespertino: hhmmToMin(S.start_vespertino),
+      sabatino: hhmmToMin(S.start_sabatino),
+      dominical: hhmmToMin(S.start_dominical),
     };
+    const durationByShift: Record<Shift, number> = {
+      matutino: Number(S.duration_matutino),
+      vespertino: Number(S.duration_vespertino),
+      sabatino: Number(S.duration_sabatino),
+      dominical: Number(S.duration_dominical),
+    };
+
     const timeSlotsByShift: Record<Shift, { day: number; start: number; end: number }[]> = {
       matutino: [], vespertino: [], sabatino: [], dominical: []
     };
     (Object.keys(SHIFT_DAYS) as Shift[]).forEach(shift => {
-      const start = starts[shift]; const startMin = hhmmToMin(start);
+      const start = startByShift[shift]; const len = durationByShift[shift];
       for (const day of SHIFT_DAYS[shift]) {
-        timeSlotsByShift[shift].push({ day, start: startMin, end: startMin + S.slot_length_minutes });
+        timeSlotsByShift[shift].push({ day, start, end: start + len });
       }
     });
 
-    // 4) Calcular # de grupos por curso y por turno (en proporción a la demanda por turno)
-    type Needed = { course_id: string; shift: Shift; needed: number; demand: number };
-    const neededGroups: Needed[] = [];
-    for (const c of coursesArr) {
-      const demand = demandByCourse.get(c.id) || 0;
-      if (!demand) continue;
-      const perShift = demandByCourseShift.get(c.id) || { matutino:0, vespertino:0, sabatino:0, dominical:0 };
-      (Object.keys(perShift) as Shift[]).forEach((shift) => {
-        const d = perShift[shift];
-        if (d > 0) {
-          const needed = Math.ceil(d / S.target_group_size);
-          if (needed > 0) neededGroups.push({ course_id: c.id, shift, needed, demand: d });
-        }
-      });
-    }
-
-    // Ordenar por “tensión” por turno
-    neededGroups.sort((a,b) => (a.demand/a.needed) < (b.demand/b.needed) ? 1 : -1);
-
-    // 5) Asignar para cada grupo un (salón + slot) del turno correspondiente
-    const occupied = new Set<string>(); // room|day|start
-    const allSlotsByShift: Record<Shift, { key: string; room: Room; slot: { day:number; start:number; end:number } }[]> = {
+    // 4) Espacios (room x slot) disponibles por turno
+    const allSlotsByShift: Record<Shift, { key: string; room: Room; slot: { day: number; start: number; end: number } }[]> = {
       matutino: [], vespertino: [], sabatino: [], dominical: []
     };
     for (const room of roomsArr) {
@@ -114,65 +101,76 @@ export async function POST() {
       });
     }
 
-    let slotIdxByShift: Record<Shift, number> = { matutino:0, vespertino:0, sabatino:0, dominical:0 };
-
+    // 5) Programar grupos por curso/turno hasta cubrir demanda (greedy por capacidad)
     const scheduledGroups: Array<{
       ephemeral_id: string;
       course_id: string;
-      group_index: number;
       shift: Shift;
-      room_id: string;
-      room_code: string;
+      group_index: number;
+      room_id: string; room_code: string;
       capacity: number;
       meeting: Meeting;
     }> = [];
+    const occupied = new Set<string>(); // room|day|start
 
-    for (const g of neededGroups) {
-      for (let i=1; i<=g.needed; i++) {
-        let placed = false, tries = 0;
-        const list = allSlotsByShift[g.shift];
-        if (!list.length) break; // si no hay slots para ese turno, no se programa
+    for (const c of coursesArr) {
+      const perShift = demandByCourseShift.get(c.id) || { matutino:0, vespertino:0, sabatino:0, dominical:0 };
 
-        while (tries < list.length) {
-          const s = list[slotIdxByShift[g.shift] % list.length]; slotIdxByShift[g.shift]++; tries++;
+      (Object.keys(perShift) as Shift[]).forEach((shift) => {
+        let demand = perShift[shift];
+        if (demand <= 0) return;
+
+        // Slots de ese turno ordenados por capacidad de salón desc (prioriza salones grandes)
+        const slots = allSlotsByShift[shift]
+          .slice()
+          .sort((a,b) => b.room.capacity - a.room.capacity);
+
+        let groupIdx = 1;
+        for (const s of slots) {
+          if (demand <= 0) break;
           if (occupied.has(s.key)) continue;
+
+          // Programa un grupo en este slot
           occupied.add(s.key);
           scheduledGroups.push({
-            ephemeral_id: `G-${g.course_id}-${g.shift}-${i}`,
-            course_id: g.course_id,
-            group_index: i,
-            shift: g.shift,
+            ephemeral_id: `G-${c.id}-${shift}-${groupIdx}`,
+            course_id: c.id,
+            shift,
+            group_index: groupIdx,
             room_id: s.room.id,
             room_code: s.room.code,
-            capacity: Math.min(S.target_group_size, s.room.capacity),
-            meeting: { day: s.slot.day, start: s.slot.start, end: s.slot.end, shift: g.shift },
+            capacity: s.room.capacity,
+            meeting: { day: s.slot.day, start: s.slot.start, end: s.slot.end, shift },
           });
-          placed = true; break;
+          groupIdx++;
+
+          // Resta demanda con la capacidad del salón elegido
+          demand = Math.max(0, demand - s.room.capacity);
         }
-        if (!placed) break;
-      }
+      });
     }
 
-    // Mapa por curso y turno
+    // 6) Asignación alumno→grupo respetando turno y choques
     const groupsByCourse = new Map<string, typeof scheduledGroups>();
     for (const g of scheduledGroups) {
       const arr = groupsByCourse.get(g.course_id) || [];
       arr.push(g); groupsByCourse.set(g.course_id, arr);
     }
 
-    // 6) Asignar alumnos: solo a grupos de su mismo turno
     const remCap = new Map<string, number>(); for (const g of scheduledGroups) remCap.set(g.ephemeral_id, g.capacity);
     const studentSchedule = new Map<string, Meeting[]>(); const studentLoad = new Map<string, number>();
     const proposed: { student_id: string; course_id: string; ephemeral_group_id: string }[] = [];
     const unassignedByCourse = new Map<string, number>();
 
+    // Capacidad total programada por curso (para priorización de escasez)
     const scheduledCapByCourse = new Map<string, number>();
     for (const g of scheduledGroups) {
       scheduledCapByCourse.set(g.course_id, (scheduledCapByCourse.get(g.course_id) || 0) + g.capacity);
     }
 
-    const courseByScarcity = Array.from(new Set(neededGroups.map(x => x.course_id))).sort((a,b) => {
-      const dA = demandByCourse.get(a) || 0, dB = demandByCourse.get(b) || 0;
+    const courseIds = coursesArr.map(c => c.id);
+    courseIds.sort((a,b) => {
+      const dA = demandByCourseTotal.get(a) || 0, dB = demandByCourseTotal.get(b) || 0;
       const cA = scheduledCapByCourse.get(a) || 0, cB = scheduledCapByCourse.get(b) || 0;
       const rA = cA>0 ? dA/cA : Infinity, rB = cB>0 ? dB/cB : Infinity;
       return rB - rA;
@@ -182,20 +180,24 @@ export async function POST() {
 
     for (const sid of studentsIds) {
       const sh = (studentShift.get(sid) || "matutino") as Shift;
-      if ((studentLoad.get(sid) || 0) >= S.max_courses_per_student) continue;
+      if ((studentLoad.get(sid) || 0) >= (S.max_courses_per_student || 5)) continue;
 
-      const eligibleCourses = (eligByStudent.get(sid) || []).slice().sort((a,b) => {
-        const dA = demandByCourse.get(a) || 0, dB = demandByCourse.get(b) || 0;
-        const cA = scheduledCapByCourse.get(a) || 0, cB = scheduledCapByCourse.get(b) || 0;
-        const rA = cA>0 ? dA/cA : Infinity, rB = cB>0 ? dB/cB : Infinity;
-        return rB - rA;
-      });
+      // Cursos elegibles priorizando los más escasos
+      const eligibleCourses = (eligByStudent.get(sid) || [])
+        .slice()
+        .sort((a,b) => {
+          const dA = demandByCourseTotal.get(a) || 0, dB = demandByCourseTotal.get(b) || 0;
+          const cA = scheduledCapByCourse.get(a) || 0, cB = scheduledCapByCourse.get(b) || 0;
+          const rA = cA>0 ? dA/cA : Infinity, rB = cB>0 ? dB/cB : Infinity;
+          return rB - rA;
+        });
 
       const sched = studentSchedule.get(sid) || [];
 
       for (const cid of eligibleCourses) {
-        if ((studentLoad.get(sid) || 0) >= S.max_courses_per_student) break;
+        if ((studentLoad.get(sid) || 0) >= (S.max_courses_per_student || 5)) break;
 
+        // Solo grupos del mismo turno del alumno
         const gs = (groupsByCourse.get(cid) || [])
           .filter(g => g.shift === sh)
           .slice()
@@ -204,19 +206,26 @@ export async function POST() {
         let placed = false;
         for (const g of gs) {
           if ((remCap.get(g.ephemeral_id) || 0) <= 0) continue;
-          const mt = g.meeting;
-          if (sched.some(s => conflict(s, mt))) continue;
 
+          // Choque horario
+          const hasOverlap = sched.some(s => overlap(s, g.meeting));
+          if (hasOverlap) continue;
+
+          // (futuro) si allow_breaks_* === false podríamos intentar agrupar “días contiguos”
+          // Por ahora se mantiene como parámetro disponible.
+
+          // Asignar
           proposed.push({ student_id: sid, course_id: cid, ephemeral_group_id: g.ephemeral_id });
           remCap.set(g.ephemeral_id, (remCap.get(g.ephemeral_id) || 0) - 1);
           studentLoad.set(sid, (studentLoad.get(sid) || 0) + 1);
-          studentSchedule.set(sid, sched.concat([mt]));
+          studentSchedule.set(sid, sched.concat([g.meeting]));
           placed = true; break;
         }
         if (!placed) unassignedByCourse.set(cid, (unassignedByCourse.get(cid) || 0) + 1);
       }
     }
 
+    // 7) Resumen
     const courseById = new Map(coursesArr.map(c => [c.id, c]));
     const groupsUsage = scheduledGroups.map(g => {
       const used = g.capacity - (remCap.get(g.ephemeral_id) || 0);
@@ -236,7 +245,13 @@ export async function POST() {
 
     return NextResponse.json({
       ok: true,
-      params: S,
+      params: {
+        max_courses_per_student: S.max_courses_per_student,
+        start_matutino: S.start_matutino, duration_matutino: S.duration_matutino, allow_breaks_matutino: S.allow_breaks_matutino,
+        start_vespertino: S.start_vespertino, duration_vespertino: S.duration_vespertino, allow_breaks_vespertino: S.allow_breaks_vespertino,
+        start_sabatino: S.start_sabatino, duration_sabatino: S.duration_sabatino, allow_breaks_sabatino: S.allow_breaks_sabatino,
+        start_dominical: S.start_dominical, duration_dominical: S.duration_dominical, allow_breaks_dominical: S.allow_breaks_dominical,
+      },
       summary: {
         students_total: eligByStudent.size,
         courses_with_demand: groupsByCourse.size,
