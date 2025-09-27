@@ -1,223 +1,192 @@
+// app/api/upload/route.ts
 import { NextResponse } from "next/server";
 import Papa from "papaparse";
-import { z } from "zod";
 import { supabaseAdmin } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
 
-// Normalización de headers: BOM, acentos, espacios -> underscore; sinónimos a clave canónica
-const normalizeHeader = (h: string) => {
-  const raw = (h ?? "").toString().replace(/\uFEFF/g, "").trim().toLowerCase();
-  const noAccent = raw.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-  const key = noAccent.replace(/\s+/g, "_");
-  if (key === "shift" || key === "turnos") return "turno";
-  return key;
-};
-
-const RowSchema = z.object({
-  student_code: z.string().min(1),
-  student_name: z.string().optional().nullable(),
-  course_code: z.string().min(1),
-  course_name: z.string().optional().nullable(),
-  turno: z.enum(["matutino","vespertino","sabatino","dominical"]).optional().nullable(),
-});
-type Row = z.infer<typeof RowSchema>;
-
-function chunk<T>(arr: T[], size = 800): T[][] {
-  const out: T[][] = [];
-  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
-  return out;
+function normCode(raw: string | null | undefined) {
+  if (!raw) return "";
+  // Quita acentos, mayúsculas, colapsa espacios y normaliza guiones
+  const s = raw
+    .normalize("NFKD").replace(/\p{Diacritic}/gu, "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toUpperCase();
+  return s.replace(/\s*-\s*/g, "-").replace(/-+/g, "-");
 }
+
+type Row = {
+  student_code: string;
+  student_name?: string | null;
+  course_code: string;
+  course_name?: string | null;
+  turno?: "matutino" | "vespertino" | "sabatino" | "dominical" | null;
+};
 
 export async function POST(req: Request) {
   try {
-    // 1) Recibir archivo
-    const form = await req.formData();
-    const file = form.get("file");
-    const filename = (form.get("filename") || "upload.csv") as string;
-    if (!(file instanceof Blob)) {
-      return NextResponse.json({ ok: false, error: "Archivo no recibido" }, { status: 400 });
-    }
+    const formData = await req.formData();
+    const file = formData.get("file") as File | null;
+    if (!file) throw new Error("Falta archivo CSV (campo 'file').");
 
-    // 2) Parseo CSV con normalización de encabezados
-    const text = await file.text();
+    const buf = Buffer.from(await file.arrayBuffer());
+    const text = buf.toString("utf-8");
+
     const parsed = Papa.parse(text, {
       header: true,
       skipEmptyLines: true,
-      transformHeader: normalizeHeader,
+      transformHeader: (h) =>
+        h
+          .normalize("NFKD").replace(/\p{Diacritic}/gu, "")
+          .trim().toLowerCase().replace(/\s+/g, "_"),
     });
 
-    const rawRows = (parsed.data as any[]) ?? [];
+    if (parsed.errors?.length) {
+      const msg = parsed.errors.map(e => `${e.type}@${e.row}:${e.message}`).slice(0,3).join(" | ");
+      throw new Error("Error al parsear CSV: " + msg);
+    }
+
+    // Normaliza filas del CSV a nuestro esquema
+    const rawRows = (parsed.data as any[]).filter(Boolean);
     const rows: Row[] = [];
-    let invalid = 0;
-
     for (const r of rawRows) {
-      if (!r || typeof r !== "object" || Object.keys(r).length === 0) { invalid++; continue; }
-      const cleaned: Row = {
-        student_code: (r.student_code ?? "").toString().trim(),
-        student_name: ((r.student_name ?? "") || "").toString().trim() || null,
-        course_code: (r.course_code ?? "").toString().trim(),
-        course_name: ((r.course_name ?? "") || "").toString().trim() || null,
-        turno: (((r.turno ?? "") || "").toString().trim().toLowerCase() || null) as any,
-      };
-      const ok = RowSchema.safeParse(cleaned);
-      if (ok.success) rows.push(ok.data); else invalid++;
+      const student_code = normCode(r.student_code || r.alumno || r.codigo || "");
+      const student_name = (r.student_name ?? r.nombre ?? "")?.toString().trim() || null;
+      const course_code  = normCode(r.course_code  || r.materia || r.clave  || "");
+      const course_name  = (r.course_name ?? r.nombre_materia ?? "")?.toString().trim() || null;
+      const turno = (r.turno ?? "")?.toString().trim().toLowerCase() || null;
+
+      if (!student_code || !course_code) continue;
+
+      // valida turno si viene
+      let t: Row["turno"] = null;
+      if (turno) {
+        if (["matutino","vespertino","sabatino","dominical"].includes(turno)) {
+          t = turno as any;
+        } else {
+          // ignora valores no válidos
+          t = null;
+        }
+      }
+
+      rows.push({ student_code, student_name, course_code, course_name, turno: t });
     }
 
-    if (rows.length === 0) {
-      return NextResponse.json(
-        { ok: false, error: "No se encontraron filas válidas. Encabezados requeridos: student_code, student_name, course_code, course_name, turno." },
-        { status: 400 }
-      );
+    if (rows.length === 0) throw new Error("CSV sin filas válidas.");
+
+    // =========================================================
+    // 0) RESET DURO: ELIMINA TODO (eligibilities -> students -> courses)
+    //    Nota: no toca rooms ni system_settings
+    // =========================================================
+    {
+      const delElig = await supabaseAdmin
+        .from("student_eligibilities")
+        .delete()
+        .not("student_id", "is", null);
+      if (delElig.error) throw delElig.error;
+
+      const delStudents = await supabaseAdmin
+        .from("students")
+        .delete()
+        .not("id", "is", null);
+      if (delStudents.error) throw delStudents.error;
+
+      const delCourses = await supabaseAdmin
+        .from("courses")
+        .delete()
+        .not("id", "is", null);
+      if (delCourses.error) throw delCourses.error;
     }
 
-    // 3) Catálogos y elegibilidades
-    type StudentBrief = { code: string; name: string | null; shift: string | null };
-    const studentByCode = new Map<string, StudentBrief>();
-    const courseByCode = new Map<string, { code: string; name: string | null }>();
-    const eligSet = new Set<string>(); // "student_code|course_code"
-
+    // =========================================================
+    // 1) INSERTA COURSES y STUDENTS (a partir del CSV normalizado)
+    // =========================================================
+    const courseMap = new Map<string, { code: string; name: string | null }>();
     for (const r of rows) {
-      // students
-      if (!studentByCode.has(r.student_code)) {
-        studentByCode.set(r.student_code, { code: r.student_code, name: r.student_name ?? null, shift: r.turno ?? null });
+      if (!courseMap.has(r.course_code)) {
+        courseMap.set(r.course_code, { code: r.course_code, name: r.course_name || null });
+      }
+    }
+    const studentMap = new Map<string, { code: string; name: string | null; shift: Row["turno"] }>();
+    for (const r of rows) {
+      if (!studentMap.has(r.student_code)) {
+        studentMap.set(r.student_code, { code: r.student_code, name: r.student_name || null, shift: r.turno || null });
       } else {
-        const prev = studentByCode.get(r.student_code)!;
+        const prev = studentMap.get(r.student_code)!;
         if (!prev.name && r.student_name) prev.name = r.student_name;
         if (!prev.shift && r.turno) prev.shift = r.turno;
       }
-      // courses
-      if (!courseByCode.has(r.course_code)) {
-        courseByCode.set(r.course_code, { code: r.course_code, name: r.course_name ?? null });
-      } else {
-        const prev = courseByCode.get(r.course_code)!;
-        if (!prev.name && r.course_name) prev.name = r.course_name;
-      }
-      // elig
-      eligSet.add(`${r.student_code}|${r.course_code}`);
     }
 
-    // upsert students SOLO con {code,name} (sin shift aún)
-    const studentsCatalog = Array.from(studentByCode.values())
-      .filter(s => s.code && s.code.trim().length > 0)
-      .map(s => ({ code: s.code.trim(), name: s.name ?? null }));
+    const { error: insCoursesErr } = await supabaseAdmin
+      .from("courses")
+      .insert(Array.from(courseMap.values()));
+    if (insCoursesErr) throw insCoursesErr;
 
-    if (studentsCatalog.length === 0) {
-      return NextResponse.json({ ok: false, error: "No se encontraron códigos de alumno válidos (student_code)." }, { status: 400 });
+    const { error: insStudentsErr } = await supabaseAdmin
+      .from("students")
+      .insert(Array.from(studentMap.values()));
+    if (insStudentsErr) throw insStudentsErr;
+
+    // =========================================================
+    // 2) MAPEA IDs y CREA PARES (student_id, course_id) SIN DUPLICADOS
+    // =========================================================
+    const { data: sRows, error: sSelErr } = await supabaseAdmin
+      .from("students")
+      .select("id, code");
+    if (sSelErr) throw sSelErr;
+
+    const { data: cRows, error: cSelErr } = await supabaseAdmin
+      .from("courses")
+      .select("id, code");
+    if (cSelErr) throw cSelErr;
+
+    const studentIdByCode = new Map<string, string>((sRows ?? []).map((x: any) => [x.code, x.id]));
+    const courseIdByCode  = new Map<string, string>((x: any) => [x.code, x.id]);
+    for (const x of (cRows ?? [])) courseIdByCode.set(x.code, x.id);
+
+    const pairsSet = new Set<string>();
+    const pairs: { student_id: string; course_id: string }[] = [];
+    let skippedNoStudent = 0, skippedNoCourse = 0, inputPairs = 0;
+
+    for (const r of rows) {
+      const sid = studentIdByCode.get(r.student_code);
+      const cid = courseIdByCode.get(r.course_code);
+      if (!sid) { skippedNoStudent++; continue; }
+      if (!cid) { skippedNoCourse++; continue; }
+      inputPairs++;
+      const key = `${sid}|${cid}`;
+      if (pairsSet.has(key)) continue;
+      pairsSet.add(key);
+      pairs.push({ student_id: sid, course_id: cid });
     }
 
-    let studentRows: { id: string; code: string }[] = [];
-    for (const part of chunk(studentsCatalog)) {
-      const { data, error } = await supabaseAdmin
-        .from("students")
-        .upsert(part, { onConflict: "code" })
-        .select("id, code");
-      if (error) throw new Error(`Error al guardar alumnos: ${error.message}`);
-      if (data?.length) studentRows = studentRows.concat(data);
-    }
-    // re-consulta por si faltó algún id
-    if (studentRows.length < studentsCatalog.length) {
-      const { data, error } = await supabaseAdmin
-        .from("students")
-        .select("id, code")
-        .in("code", studentsCatalog.map(s => s.code));
-      if (error) throw new Error(`Error al reconsultar alumnos: ${error.message}`);
-      if (data?.length) studentRows = data;
-    }
-    const studentIdByCode = new Map(studentRows.map(r => [r.code, r.id]));
+    // =========================================================
+    // 3) INSERTA ELEGIBILIDADES (tabla está vacía)
+    // =========================================================
+    const { error: insEligErr, count: insertedCount } = await supabaseAdmin
+      .from("student_eligibilities")
+      .insert(pairs, { count: "exact" });
+    if (insEligErr) throw insEligErr;
 
-    // ACTUALIZAR shift SOLO donde viene (update por id, nunca upsert)
-    const shiftPairs = Array.from(studentByCode.values())
-      .filter(s => !!s.shift)
-      .map(s => ({ code: s.code, id: studentIdByCode.get(s.code), shift: s.shift as string }))
-      .filter(x => !!x.id) as { code: string; id: string; shift: string }[];
+    // =========================================================
+    // 4) RESPUESTA RESUMEN
+    // =========================================================
+    const summary = {
+      destructive_reset: true,
+      students_inserted: studentMap.size,
+      courses_inserted: courseMap.size,
+      input_rows: rows.length,
+      input_pairs_built: inputPairs,
+      unique_pairs_inserted: pairs.length,
+      inserted_count_from_db: insertedCount ?? null,
+      skipped_no_student: skippedNoStudent,
+      skipped_no_course: skippedNoCourse,
+    };
 
-    for (const part of chunk(shiftPairs, 200)) {
-      for (const row of part) {
-        const { error } = await supabaseAdmin
-          .from("students")
-          .update({ shift: row.shift })
-          .eq("id", row.id);
-        if (error) throw new Error(`Error al actualizar turno de alumnos: ${error.message}`);
-      }
-    }
-
-    // upsert courses
-    const coursesCatalog = Array.from(courseByCode.values())
-      .filter(c => c.code && c.code.trim().length > 0)
-      .map(c => ({ code: c.code.trim(), name: c.name ?? null }));
-
-    if (coursesCatalog.length === 0) {
-      return NextResponse.json({ ok: false, error: "No se encontraron códigos de materia válidos (course_code)." }, { status: 400 });
-    }
-
-    let courseRows: { id: string; code: string }[] = [];
-    for (const part of chunk(coursesCatalog)) {
-      const { data, error } = await supabaseAdmin
-        .from("courses")
-        .upsert(part, { onConflict: "code" })
-        .select("id, code");
-      if (error) throw new Error(`Error al guardar materias: ${error.message}`);
-      if (data?.length) courseRows = courseRows.concat(data);
-    }
-    if (courseRows.length < coursesCatalog.length) {
-      const { data, error } = await supabaseAdmin
-        .from("courses")
-        .select("id, code")
-        .in("code", coursesCatalog.map(c => c.code));
-      if (error) throw new Error(`Error al reconsultar materias: ${error.message}`);
-      if (data?.length) courseRows = data;
-    }
-    const courseIdByCode = new Map(courseRows.map(r => [r.code, r.id]));
-
-    // elegibilidades
-    const eligRows = Array.from(eligSet.values())
-      .map(k => {
-        const [sCode, cCode] = k.split("|");
-        const sid = studentIdByCode.get(sCode);
-        const cid = courseIdByCode.get(cCode);
-        if (!sid || !cid) return null;
-        return { student_id: sid, course_id: cid };
-      })
-      .filter(Boolean) as { student_id: string; course_id: string }[];
-
-    for (const part of chunk(eligRows)) {
-      const { error } = await supabaseAdmin
-        .from("student_eligibilities")
-        .upsert(part, { onConflict: "student_id,course_id" });
-      if (error) throw new Error(`Error al guardar elegibilidades: ${error.message}`);
-    }
-
-    // metadatos archivo
-    const { data: rec, error: upErr } = await supabaseAdmin
-      .from("file_uploads")
-      .insert({
-        filename,
-        rows_total: rawRows.length,
-        rows_valid: rows.length,
-        rows_invalid: invalid,
-        students_upserted: studentsCatalog.length,
-        courses_upserted: coursesCatalog.length,
-        eligibilities_upserted: eligRows.length,
-      })
-      .select("id, filename, uploaded_at")
-      .single();
-    if (upErr) throw new Error(`Error al guardar metadatos de archivo: ${upErr.message}`);
-
-    return NextResponse.json({
-      ok: true,
-      file: { id: rec.id, filename: rec.filename, uploaded_at: rec.uploaded_at },
-      summary: {
-        rows_total: rawRows.length,
-        rows_valid: rows.length,
-        rows_invalid: invalid,
-        students_upserted: studentsCatalog.length,
-        courses_upserted: coursesCatalog.length,
-        eligibilities_upserted: eligRows.length,
-      },
-    });
+    return NextResponse.json({ ok: true, summary });
   } catch (e: any) {
-    console.error(e);
-    return NextResponse.json({ ok: false, error: e?.message ?? "Error desconocido" }, { status: 500 });
+    return NextResponse.json({ ok: false, error: e?.message ?? "Error" }, { status: 500 });
   }
 }
