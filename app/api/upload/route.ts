@@ -174,6 +174,18 @@ for (const r of rows) {
       .insert(pairs, { count: "exact" });
     if (insEligErr) throw insEligErr;
 
+    // ... ya calculaste 'summary', 'rows', 'studentMap', 'courseMap', 'pairs'
+
+await supabaseAdmin.from("upload_audit").insert({
+  file_name: (file as any)?.name ?? null,
+  students_count: studentMap.size,
+  courses_count: courseMap.size,
+  eligibilities_count: pairs.length,
+  input_rows: rows.length,
+  summary, // jsonb
+});
+
+
     // =========================================================
     // 4) RESPUESTA RESUMEN
     // =========================================================
