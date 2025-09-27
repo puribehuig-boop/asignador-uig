@@ -1,97 +1,66 @@
-"use client";
+// app/page.tsx
+export const revalidate = 0;              // desactiva ISR
+export const dynamic = "force-dynamic";   // fuerza contenido dinámico
 
-import React, { useEffect, useState } from "react";
+import { supabaseAdmin } from "@/lib/supabase/server";
 
-type LastUpload = {
-  filename: string;
-  uploaded_at: string;
-  rows_total: number;
-  rows_valid: number;
-  rows_invalid: number;
-  students_upserted: number;
-  courses_upserted: number;
-  eligibilities_upserted: number;
-} | null;
+type UploadAudit = {
+  file_name: string | null;
+  students_count: number | null;
+  courses_count: number | null;
+  eligibilities_count: number | null;
+  input_rows: number | null;
+  created_at: string; // ISO
+};
 
-export default function Home() {
-  const [last, setLast] = useState<LastUpload>(null);
-  const [loading, setLoading] = useState(false);
+async function getLastUpload(): Promise<UploadAudit | null> {
+  const { data, error } = await supabaseAdmin
+    .from("upload_audit")
+    .select("file_name, students_count, courses_count, eligibilities_count, input_rows, created_at")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) return null;
+  return data as any;
+}
 
-  const loadLast = async () => {
-    setLoading(true);
-    try {
-      const res = await fetch("/api/uploads/last", { cache: "no-store" });
-      const json = await res.json();
-      if (json?.ok) setLast(json.last as LastUpload);
-    } catch {
-      // ignore
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    loadLast();
-  }, []);
+export default async function Home() {
+  const last = await getLastUpload();
 
   return (
-    <main style={{ padding: 24, lineHeight: 1.4 }}>
+    <main style={{ padding: 24 }}>
       <h1>Asignador UIG</h1>
-      <p style={{ color: "#555" }}>Flujo recomendado</p>
 
-      <ol style={{ listStyle: "none", padding: 0, display: "grid", gap: 12, maxWidth: 900 }}>
-        {/* Paso 1 */}
-        <li style={{ border: "1px solid #eee", borderRadius: 12, padding: 16 }}>
-          <div style={{ fontSize: 12, color: "#888" }}>Paso 1</div>
-          <div style={{ fontSize: 18, fontWeight: 600 }}>Cargar elegibilidades</div>
-          <p>Sube el CSV de alumno &rarr; materias posibles con columna "turno".</p>
-          <a href="/upload">Ir a /upload &rarr;</a>
+      <section style={{ marginTop: 20, padding: 16, border: "1px solid #eee", borderRadius: 8 }}>
+        <div style={{ fontSize: 12, color: "#888" }}>Paso 1</div>
+        <div style={{ fontSize: 18, fontWeight: 600 }}>Cargar elegibilidades</div>
+        <p>Sube el CSV de alumno → materias posibles con columna “turno”.</p>
+        <a href="/upload">Ir a /upload →</a>
 
-          <div style={{ marginTop: 12, background: "#f9fafc", padding: 12, borderRadius: 8 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <strong>Estado de carga:</strong>
-              <button
-                type="button"
-                onClick={loadLast}
-                disabled={loading}
-                style={{ padding: "4px 8px", fontSize: 12 }}
-              >
-                {loading ? "Actualizando..." : "Actualizar"}
-              </button>
-            </div>
+        <div style={{ marginTop: 12, background: "#f9fafc", padding: 12, borderRadius: 8 }}>
+          <div style={{ fontWeight: 600, marginBottom: 6 }}>Estado de carga</div>
 
-            {last ? (
-              <div style={{ marginTop: 6 }}>
-                <div>Archivo: {last.filename}</div>
-                <div>
-                  Filas: {last.rows_valid}/{last.rows_total} validas (invalidas: {last.rows_invalid})
-                </div>
-                <div>
-                  Alumnos: {last.students_upserted} · Materias: {last.courses_upserted} · Elegibilidades: {last.eligibilities_upserted}
-                </div>
+          {last ? (
+            <div style={{ lineHeight: 1.6 }}>
+              <div><b>Archivo:</b> {last.file_name ?? "—"}</div>
+              <div>
+                <b>Fecha:</b>{" "}
+                {new Date(last.created_at).toLocaleString("es-MX", { hour12: false })}
               </div>
-            ) : (
-              <div style={{ marginTop: 6, color: "#888" }}>Sin carga de archivo</div>
-            )}
-          </div>
-        </li>
+              <div>
+                <b>Alumnos:</b> {last.students_count ?? 0} ·{" "}
+                <b>Materias:</b> {last.courses_count ?? 0} ·{" "}
+                <b>Elegibilidades:</b> {last.eligibilities_count ?? 0} ·{" "}
+                <b>Filas CSV:</b> {last.input_rows ?? 0}
+              </div>
+            </div>
+          ) : (
+            <div style={{ color: "#666" }}>Sin carga de archivo</div>
+          )}
+        </div>
+      </section>
 
-        {/* Paso 2 */}
-        <li style={{ border: "1px solid #eee", borderRadius: 12, padding: 16 }}>
-          <div style={{ fontSize: 12, color: "#888" }}>Paso 2</div>
-          <div style={{ fontSize: 18, fontWeight: 600 }}>Revisar salones y restricciones</div>
-          <p>Administra salones y define hora de inicio, duracion y descansos por turno.</p>
-          <a href="/settings">Ir a Ajustes (General) &rarr;</a>
-        </li>
-
-        {/* Paso 3 */}
-        <li style={{ border: "1px solid #eee", borderRadius: 12, padding: 16 }}>
-          <div style={{ fontSize: 12, color: "#888" }}>Paso 3</div>
-          <div style={{ fontSize: 18, fontWeight: 600 }}>Asignar y ver vista previa</div>
-          <p>Genera grupos, horarios y asignacion propuesta (sin escribir en DB).</p>
-          <a href="/assign">Ir a Vista previa &rarr;</a>
-        </li>
-      </ol>
+      {/* ...resto de tu flujo (Ajustes, Asignar, etc.) */}
     </main>
   );
 }
