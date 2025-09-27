@@ -130,37 +130,41 @@ export async function POST(req: Request) {
     if (insStudentsErr) throw insStudentsErr;
 
     // =========================================================
-    // 2) MAPEA IDs y CREA PARES (student_id, course_id) SIN DUPLICADOS
-    // =========================================================
-    const { data: sRows, error: sSelErr } = await supabaseAdmin
-      .from("students")
-      .select("id, code");
-    if (sSelErr) throw sSelErr;
+// 2) MAPEA IDs y CREA PARES (student_id, course_id) SIN DUPLICADOS
+// =========================================================
+const { data: sRows, error: sSelErr } = await supabaseAdmin
+  .from("students")
+  .select("id, code");
+if (sSelErr) throw sSelErr;
 
-    const { data: cRows, error: cSelErr } = await supabaseAdmin
-      .from("courses")
-      .select("id, code");
-    if (cSelErr) throw cSelErr;
+const { data: cRows, error: cSelErr } = await supabaseAdmin
+  .from("courses")
+  .select("id, code");
+if (cSelErr) throw cSelErr;
 
-    const studentIdByCode = new Map<string, string>((sRows ?? []).map((x: any) => [x.code, x.id]));
-    const courseIdByCode  = new Map<string, string>((x: any) => [x.code, x.id]);
-    for (const x of (cRows ?? [])) courseIdByCode.set(x.code, x.id);
+const studentIdByCode = new Map<string, string>(
+  (sRows ?? []).map((x: any) => [x.code as string, x.id as string] as const)
+);
+const courseIdByCode = new Map<string, string>(
+  (cRows ?? []).map((x: any) => [x.code as string, x.id as string] as const)
+);
 
-    const pairsSet = new Set<string>();
-    const pairs: { student_id: string; course_id: string }[] = [];
-    let skippedNoStudent = 0, skippedNoCourse = 0, inputPairs = 0;
+const pairsSet = new Set<string>();
+const pairs: { student_id: string; course_id: string }[] = [];
+let skippedNoStudent = 0, skippedNoCourse = 0, inputPairs = 0;
 
-    for (const r of rows) {
-      const sid = studentIdByCode.get(r.student_code);
-      const cid = courseIdByCode.get(r.course_code);
-      if (!sid) { skippedNoStudent++; continue; }
-      if (!cid) { skippedNoCourse++; continue; }
-      inputPairs++;
-      const key = `${sid}|${cid}`;
-      if (pairsSet.has(key)) continue;
-      pairsSet.add(key);
-      pairs.push({ student_id: sid, course_id: cid });
-    }
+for (const r of rows) {
+  const sid = studentIdByCode.get(r.student_code);
+  const cid = courseIdByCode.get(r.course_code);
+  if (!sid) { skippedNoStudent++; continue; }
+  if (!cid) { skippedNoCourse++; continue; }
+  inputPairs++;
+  const key = `${sid}|${cid}`;
+  if (pairsSet.has(key)) continue;
+  pairsSet.add(key);
+  pairs.push({ student_id: sid, course_id: cid });
+}
+
 
     // =========================================================
     // 3) INSERTA ELEGIBILIDADES (tabla está vacía)
