@@ -5,79 +5,80 @@ import { supabaseAdmin } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
 
+// Utilidades de normalización
+function stripDiacritics(s: string) {
+  return s.normalize("NFKD").replace(/[\u0300-\u036f]/g, "");
+}
 function normCode(raw: string | null | undefined) {
   if (!raw) return "";
-  // Quita acentos, mayúsculas, colapsa espacios y normaliza guiones
-  const s = raw
-    .normalize("NFKD").replace(/\p{Diacritic}/gu, "")
+  const s = stripDiacritics(String(raw))
     .trim()
     .replace(/\s+/g, " ")
     .toUpperCase();
+  // normaliza guiones: sin espacios a los lados y colapsa múltiples
   return s.replace(/\s*-\s*/g, "-").replace(/-+/g, "-");
 }
 
+type Turno = "matutino" | "vespertino" | "sabatino" | "dominical";
 type Row = {
   student_code: string;
   student_name?: string | null;
   course_code: string;
   course_name?: string | null;
-  turno?: "matutino" | "vespertino" | "sabatino" | "dominical" | null;
+  turno?: Turno | null;
 };
 
 export async function POST(req: Request) {
   try {
+    // 1) Leer archivo
     const formData = await req.formData();
     const file = formData.get("file") as File | null;
     if (!file) throw new Error("Falta archivo CSV (campo 'file').");
+    const fileName = (file as any)?.name ?? null;
 
     const buf = Buffer.from(await file.arrayBuffer());
     const text = buf.toString("utf-8");
 
+    // 2) Parse CSV con headers normalizados
     const parsed = Papa.parse(text, {
       header: true,
       skipEmptyLines: true,
       transformHeader: (h) =>
-        h
-          .normalize("NFKD").replace(/\p{Diacritic}/gu, "")
-          .trim().toLowerCase().replace(/\s+/g, "_"),
+        stripDiacritics(String(h))
+          .trim()
+          .toLowerCase()
+          .replace(/\s+/g, "_"),
     });
 
     if (parsed.errors?.length) {
-      const msg = parsed.errors.map(e => `${e.type}@${e.row}:${e.message}`).slice(0,3).join(" | ");
+      const msg = parsed.errors.map(e => `${e.type}@${e.row}:${e.message}`).slice(0, 3).join(" | ");
       throw new Error("Error al parsear CSV: " + msg);
     }
 
-    // Normaliza filas del CSV a nuestro esquema
+    // 3) Normalizar filas al esquema
     const rawRows = (parsed.data as any[]).filter(Boolean);
     const rows: Row[] = [];
     for (const r of rawRows) {
       const student_code = normCode(r.student_code || r.alumno || r.codigo || "");
       const student_name = (r.student_name ?? r.nombre ?? "")?.toString().trim() || null;
-      const course_code  = normCode(r.course_code  || r.materia || r.clave  || "");
-      const course_name  = (r.course_name ?? r.nombre_materia ?? "")?.toString().trim() || null;
-      const turno = (r.turno ?? "")?.toString().trim().toLowerCase() || null;
+      const course_code = normCode(r.course_code || r.materia || r.clave || "");
+      const course_name = (r.course_name ?? r.nombre_materia ?? "")?.toString().trim() || null;
+      const turnoRaw = (r.turno ?? "")?.toString().trim().toLowerCase();
 
       if (!student_code || !course_code) continue;
 
-      // valida turno si viene
-      let t: Row["turno"] = null;
-      if (turno) {
-        if (["matutino","vespertino","sabatino","dominical"].includes(turno)) {
-          t = turno as any;
-        } else {
-          // ignora valores no válidos
-          t = null;
-        }
+      let turno: Row["turno"] = null;
+      if (turnoRaw && ["matutino", "vespertino", "sabatino", "dominical"].includes(turnoRaw)) {
+        turno = turnoRaw as Turno;
       }
 
-      rows.push({ student_code, student_name, course_code, course_name, turno: t });
+      rows.push({ student_code, student_name, course_code, course_name, turno });
     }
 
     if (rows.length === 0) throw new Error("CSV sin filas válidas.");
 
     // =========================================================
-    // 0) RESET DURO: ELIMINA TODO (eligibilities -> students -> courses)
-    //    Nota: no toca rooms ni system_settings
+    // RESET DURO (destructivo): deja BD exactamente como el CSV
     // =========================================================
     {
       const delElig = await supabaseAdmin
@@ -100,7 +101,7 @@ export async function POST(req: Request) {
     }
 
     // =========================================================
-    // 1) INSERTA COURSES y STUDENTS (a partir del CSV normalizado)
+    // Insertar COURSES y STUDENTS (deduplicados desde el CSV)
     // =========================================================
     const courseMap = new Map<string, { code: string; name: string | null }>();
     for (const r of rows) {
@@ -108,6 +109,7 @@ export async function POST(req: Request) {
         courseMap.set(r.course_code, { code: r.course_code, name: r.course_name || null });
       }
     }
+
     const studentMap = new Map<string, { code: string; name: string | null; shift: Row["turno"] }>();
     for (const r of rows) {
       if (!studentMap.has(r.student_code)) {
@@ -130,64 +132,51 @@ export async function POST(req: Request) {
     if (insStudentsErr) throw insStudentsErr;
 
     // =========================================================
-// 2) MAPEA IDs y CREA PARES (student_id, course_id) SIN DUPLICADOS
-// =========================================================
-const { data: sRows, error: sSelErr } = await supabaseAdmin
-  .from("students")
-  .select("id, code");
-if (sSelErr) throw sSelErr;
+    // Mapear IDs y construir parejas únicas (student_id, course_id)
+    // =========================================================
+    const { data: sRows, error: sSelErr } = await supabaseAdmin
+      .from("students")
+      .select("id, code");
+    if (sSelErr) throw sSelErr;
 
-const { data: cRows, error: cSelErr } = await supabaseAdmin
-  .from("courses")
-  .select("id, code");
-if (cSelErr) throw cSelErr;
+    const { data: cRows, error: cSelErr } = await supabaseAdmin
+      .from("courses")
+      .select("id, code");
+    if (cSelErr) throw cSelErr;
 
-const studentIdByCode = new Map<string, string>(
-  (sRows ?? []).map((x: any) => [x.code as string, x.id as string] as const)
-);
-const courseIdByCode = new Map<string, string>(
-  (cRows ?? []).map((x: any) => [x.code as string, x.id as string] as const)
-);
+    const studentIdByCode = new Map<string, string>(
+      (sRows ?? []).map((x: any) => [x.code as string, x.id as string] as const)
+    );
+    const courseIdByCode = new Map<string, string>(
+      (cRows ?? []).map((x: any) => [x.code as string, x.id as string] as const)
+    );
 
-const pairsSet = new Set<string>();
-const pairs: { student_id: string; course_id: string }[] = [];
-let skippedNoStudent = 0, skippedNoCourse = 0, inputPairs = 0;
+    const pairsSet = new Set<string>();
+    const pairs: { student_id: string; course_id: string }[] = [];
+    let skippedNoStudent = 0, skippedNoCourse = 0, inputPairs = 0;
 
-for (const r of rows) {
-  const sid = studentIdByCode.get(r.student_code);
-  const cid = courseIdByCode.get(r.course_code);
-  if (!sid) { skippedNoStudent++; continue; }
-  if (!cid) { skippedNoCourse++; continue; }
-  inputPairs++;
-  const key = `${sid}|${cid}`;
-  if (pairsSet.has(key)) continue;
-  pairsSet.add(key);
-  pairs.push({ student_id: sid, course_id: cid });
-}
-
+    for (const r of rows) {
+      const sid = studentIdByCode.get(r.student_code);
+      const cid = courseIdByCode.get(r.course_code);
+      if (!sid) { skippedNoStudent++; continue; }
+      if (!cid) { skippedNoCourse++; continue; }
+      inputPairs++;
+      const key = `${sid}|${cid}`;
+      if (pairsSet.has(key)) continue;
+      pairsSet.add(key);
+      pairs.push({ student_id: sid, course_id: cid });
+    }
 
     // =========================================================
-    // 3) INSERTA ELEGIBILIDADES (tabla está vacía)
+    // Insertar ELEGIBILIDADES
     // =========================================================
     const { error: insEligErr, count: insertedCount } = await supabaseAdmin
       .from("student_eligibilities")
       .insert(pairs, { count: "exact" });
     if (insEligErr) throw insEligErr;
 
-    // ... ya calculaste 'summary', 'rows', 'studentMap', 'courseMap', 'pairs'
-
-await supabaseAdmin.from("upload_audit").insert({
-  file_name: (file as any)?.name ?? null,
-  students_count: studentMap.size,
-  courses_count: courseMap.size,
-  eligibilities_count: pairs.length,
-  input_rows: rows.length,
-  summary, // jsonb
-});
-
-
     // =========================================================
-    // 4) RESPUESTA RESUMEN
+    // Summary + auditoría (upload_audit)
     // =========================================================
     const summary = {
       destructive_reset: true,
@@ -200,6 +189,16 @@ await supabaseAdmin.from("upload_audit").insert({
       skipped_no_student: skippedNoStudent,
       skipped_no_course: skippedNoCourse,
     };
+
+    // Registrar auditoría (requiere tabla upload_audit creada)
+    await supabaseAdmin.from("upload_audit").insert({
+      file_name: fileName,
+      students_count: studentMap.size,
+      courses_count: courseMap.size,
+      eligibilities_count: pairs.length,
+      input_rows: rows.length,
+      summary, // jsonb
+    });
 
     return NextResponse.json({ ok: true, summary });
   } catch (e: any) {
