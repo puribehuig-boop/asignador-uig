@@ -1,7 +1,8 @@
 // app/page.tsx
-export const revalidate = 0;              // desactiva ISR
-export const dynamic = "force-dynamic";   // fuerza contenido dinámico
+export const revalidate = 0;
+export const dynamic = "force-dynamic";
 
+import Link from "next/link";
 import { supabaseAdmin } from "@/lib/supabase/server";
 
 type UploadAudit = {
@@ -24,28 +25,71 @@ async function getLastUpload(): Promise<UploadAudit | null> {
   return data as any;
 }
 
+function Card({
+  step,
+  title,
+  children,
+}: {
+  step: number;
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section
+      style={{
+        marginTop: 20,
+        padding: 16,
+        border: "1px solid #e5e7eb",
+        borderRadius: 12,
+        background: "#fff",
+      }}
+    >
+      <div style={{ fontSize: 12, color: "#6b7280" }}>Paso {step}</div>
+      <div style={{ fontSize: 18, fontWeight: 700, marginTop: 2 }}>{title}</div>
+      <div style={{ marginTop: 8 }}>{children}</div>
+    </section>
+  );
+}
+
 export default async function Home() {
   const last = await getLastUpload();
 
   return (
-    <main style={{ padding: 24 }}>
-      <h1>Asignador UIG</h1>
+    <main style={{ padding: 24, lineHeight: 1.45, maxWidth: 980, margin: "0 auto" }}>
+      <h1 style={{ fontSize: 28, fontWeight: 800 }}>Asignador UIG</h1>
+      <p style={{ color: "#6b7280", marginTop: 4 }}>Flujo recomendado</p>
 
-      <section style={{ marginTop: 20, padding: 16, border: "1px solid #eee", borderRadius: 8 }}>
-        <div style={{ fontSize: 12, color: "#888" }}>Paso 1</div>
-        <div style={{ fontSize: 18, fontWeight: 600 }}>Cargar elegibilidades</div>
-        <p>Sube el CSV de alumno → materias posibles con columna “turno”.</p>
-        <a href="/upload">Ir a /upload →</a>
+      {/* PASO 1: Cargar elegibilidades */}
+      <Card step={1} title="Cargar elegibilidades">
+        <p>
+          Sube el CSV de <b>alumno → materias posibles</b> con la columna <code>turno</code>.
+        </p>
+        <div style={{ display: "flex", gap: 12, alignItems: "center", marginTop: 8 }}>
+          <Link href="/upload" style={{ color: "#2563eb", fontWeight: 600, textDecoration: "none" }}>
+            Ir a /upload →
+          </Link>
+        </div>
 
-        <div style={{ marginTop: 12, background: "#f9fafc", padding: 12, borderRadius: 8 }}>
-          <div style={{ fontWeight: 600, marginBottom: 6 }}>Estado de carga</div>
-
+        <div
+          style={{
+            marginTop: 12,
+            background: "#f9fafb",
+            padding: 12,
+            borderRadius: 8,
+            border: "1px dashed #e5e7eb",
+          }}
+        >
+          <div style={{ fontWeight: 700, marginBottom: 6 }}>Estado de carga</div>
           {last ? (
-            <div style={{ lineHeight: 1.6 }}>
-              <div><b>Archivo:</b> {last.file_name ?? "—"}</div>
+            <div style={{ display: "grid", gap: 6 }}>
+              <div>
+                <b>Archivo:</b> {last.file_name ?? "—"}
+              </div>
               <div>
                 <b>Fecha:</b>{" "}
-                {new Date(last.created_at).toLocaleString("es-MX", { hour12: false })}
+                {new Date(last.created_at).toLocaleString("es-MX", {
+                  hour12: false,
+                })}
               </div>
               <div>
                 <b>Alumnos:</b> {last.students_count ?? 0} ·{" "}
@@ -55,12 +99,61 @@ export default async function Home() {
               </div>
             </div>
           ) : (
-            <div style={{ color: "#666" }}>Sin carga de archivo</div>
+            <div style={{ color: "#6b7280" }}>Sin carga de archivo</div>
           )}
         </div>
-      </section>
+      </Card>
 
-      {/* ...resto de tu flujo (Ajustes, Asignar, etc.) */}
+      {/* PASO 2: Ajustes */}
+      <Card step={2} title="Revisar salones y restricciones">
+        <p style={{ marginBottom: 8 }}>
+          Configura <b>salones</b> y <b>parámetros por turno</b> (inicio, duración, número de slots, “sin descanso”, etc.).
+        </p>
+        <Link href="/settings" style={{ color: "#2563eb", fontWeight: 600, textDecoration: "none" }}>
+          Ir a /settings →
+        </Link>
+
+        {/* Lista de restricciones fijas (solo informativas) */}
+        <div style={{ marginTop: 12, background: "#f9fafb", padding: 12, borderRadius: 8 }}>
+          <div style={{ fontWeight: 700, marginBottom: 6 }}>Restricciones (informativas)</div>
+          <ul style={{ margin: 0, paddingLeft: 18 }}>
+            <li>Ningún alumno puede tener dos clases a la misma hora.</li>
+            <li>Clases se asignan en horarios seguidos (si “sin descanso” está activo).</li>
+            <li>Un alumno no puede tomar la misma materia más de una vez.</li>
+            <li>No hay solapamiento de grupos en el mismo salón.</li>
+          </ul>
+        </div>
+      </Card>
+
+      {/* PASO 3: Asignar y Previsualizar */}
+      <Card step={3} title="Asignar y ver vista previa">
+        <p style={{ marginBottom: 8 }}>
+          Genera una asignación factible y revisa las pestañas <b>Materias</b>, <b>Alumnos</b> y <b>Horarios</b>.
+        </p>
+        <Link href="/assign" style={{ color: "#2563eb", fontWeight: 600, textDecoration: "none" }}>
+          Ir a /assign →
+        </Link>
+
+        <div
+          style={{
+            marginTop: 12,
+            background: "#f9fafb",
+            padding: 12,
+            borderRadius: 8,
+            border: "1px dashed #e5e7eb",
+          }}
+        >
+          <div style={{ fontWeight: 700, marginBottom: 6 }}>Sugerencias</div>
+          <ul style={{ margin: 0, paddingLeft: 18 }}>
+            <li>
+              Si hay poca cobertura, ajusta <b>slots por turno</b> o habilita “sin descanso” para más continuidad.
+            </li>
+            <li>
+              Aumenta <b>secciones por curso y slot</b> en Ajustes si hay mucha demanda en un turno.
+            </li>
+          </ul>
+        </div>
+      </Card>
     </main>
   );
 }
