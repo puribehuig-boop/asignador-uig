@@ -1,3 +1,4 @@
+// app/api/assign/preview/route.ts
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/server";
 
@@ -14,7 +15,6 @@ const SHIFT_DAYS: Record<Shift, number[]> = {
   sabatino: [6],
   dominical: [7],
 };
-
 const SHIFTS: Shift[] = ["matutino", "vespertino", "sabatino", "dominical"];
 
 function hhmmToMin(s: string): number {
@@ -62,17 +62,19 @@ export async function POST() {
       sabatino: Boolean(S.allow_breaks_sabatino ?? true),
       dominical: Boolean(S.allow_breaks_dominical ?? true),
     };
+
+    // límites por alumno
     const maxCoursesPerStudent = Number(S.max_courses_per_student ?? 5);
 
-    // Parámetros de llenado
+    // Parámetros de llenado de grupos
     const maxSectionsPerCoursePerSlot: number = Number(S.max_sections_per_course_per_slot ?? 2);
     const overProvisionFactor: number = Number(S.over_provision_factor ?? 1.15); // 15% por defecto
-    const assignmentPasses: number = Math.max(1, Number(S.assignment_passes ?? 6)); 
-    // Umbral opcional para abrir grupos (0..1). Ej: 0.4 = no abrir si esperamos <40% de ocupación
-    const minFillRate: number | null = (S.min_fill_rate !== undefined && S.min_fill_rate !== null)
-      ? Math.max(0, Math.min(1, Number(S.min_fill_rate)))
-      : null;
-    // pasadas asc/desc
+    const assignmentPasses: number = Math.max(1, Number(S.assignment_passes ?? 6));
+    // Umbral opcional (0..1) para abrir grupos: evita grupos “flacos” en salas grandes
+    const minFillRate: number | null =
+      S.min_fill_rate !== undefined && S.min_fill_rate !== null
+        ? Math.max(0, Math.min(1, Number(S.min_fill_rate)))
+        : null;
 
     // ========= 1) DATOS =========
     const [{ data: elig }, { data: courses }, { data: rooms }, { data: students }] = await Promise.all([
@@ -125,10 +127,11 @@ export async function POST() {
       scheduledCapacityByCourseShift.set(cid, sched);
     }
 
+    // ========= 3b) SLOTS y SALAS =========
     const roomsByCapacity = roomsArr.slice().sort((a, b) => b.capacity - a.capacity);
-    const groupIndexMap = new Map<string, number>(); // `${cid}|${shift}` -> idx
+    const groupIndexMap = new Map<string, number>(); // `${cid}|${shift}` -> consecutive idx within (course,shift)
 
-    const scheduledGroups: Array<{
+    type ScheduledGroup = {
       ephemeral_id: string;
       course_id: string;
       shift: Shift;
@@ -137,9 +140,10 @@ export async function POST() {
       room_code: string;
       capacity: number;
       meeting: { day: number; start: number; end: number; shift: Shift; slot_index: number };
-    }> = [];
+    };
+    const scheduledGroups: ScheduledGroup[] = [];
 
-    // Slots por turno
+    // Generación de slots por turno a partir de settings
     const timeSlotsByShift: Record<Shift, Array<{ day: number; start: number; end: number; shift: Shift; index: number }>> = {
       matutino: [],
       vespertino: [],
@@ -159,7 +163,7 @@ export async function POST() {
       }
     }
 
-    // ========= 3b) PROGRAMACIÓN DE GRUPOS (best-fit por sala) =========
+    // ========= 3c) PROGRAMACIÓN DE GRUPOS (best-fit sala↔curso) =========
     for (const shift of SHIFTS) {
       const hasAnyDemand = Array.from(demandByCourseShift.values()).some(per => (per[shift] || 0) > 0);
       if (!hasAnyDemand) continue;
@@ -169,7 +173,7 @@ export async function POST() {
       for (const s of slots) {
         const usedCountThisSlot = new Map<string, number>(); // curso -> secciones en este slot
 
-        // ordenar salas por capacidad (desc) y elegir el curso con mejor "ajuste" (best-fit)
+        // Por sala (cap desc) elige el curso que mejor calce (fit) su gap a la capacidad
         for (const room of roomsByCapacity) {
           let bestCid: string | null = null;
           let bestScore = -Infinity;
@@ -177,22 +181,21 @@ export async function POST() {
 
           for (const [cid, per] of demandByCourseShift.entries()) {
             const dem = per[shift] || 0;
-            if (dem <= 0) continue; // sin demanda en este turno
+            if (dem <= 0) continue;
 
             const used = usedCountThisSlot.get(cid) || 0;
             if (used >= maxSectionsPerCoursePerSlot) continue;
 
             const target = targetCapacityByCourseShift.get(cid)![shift] || 0;
             const sched  = scheduledCapacityByCourseShift.get(cid)![shift] || 0;
-            const gap = Math.max(0, target - sched);
+            const gap    = Math.max(0, target - sched);
             if (gap <= 0) continue;
 
-            // Best-fit score para esta sala
             const fit  = Math.min(room.capacity, gap);
             const over = Math.max(0, room.capacity - gap);
-            const score = fit - 0.25 * over; // α=0.25
+            const score = fit - 0.25 * over; // α penaliza sobre-dimensionar
 
-            // Filtro por minFillRate opcional
+            // Si definiste min_fill_rate, no abras grupos con “fit/cap” por debajo
             if (minFillRate !== null) {
               const ratio = room.capacity > 0 ? fit / room.capacity : 0;
               if (ratio < minFillRate) continue;
@@ -200,12 +203,11 @@ export async function POST() {
 
             if (score > bestScore) {
               bestScore = score;
-              bestCid = cid;
-              bestFit = fit;
+              bestCid   = cid;
+              bestFit   = fit;
             }
           }
 
-          // si ninguna materia calza razonablemente, no programamos esta sala/slot
           if (!bestCid || bestScore <= 0 || bestFit <= 0) continue;
 
           const key = `${bestCid}|${shift}`;
@@ -225,7 +227,7 @@ export async function POST() {
 
           usedCountThisSlot.set(bestCid, (usedCountThisSlot.get(bestCid) || 0) + 1);
 
-          // acumular capacidad programada
+          // acumula capacidad programada por (curso, turno)
           const sc = scheduledCapacityByCourseShift.get(bestCid)!;
           sc[shift] = (sc[shift] || 0) + room.capacity;
           scheduledCapacityByCourseShift.set(bestCid, sc);
@@ -233,39 +235,41 @@ export async function POST() {
       }
     }
 
-    // ========= 4) ASIGNACIÓN MULTI-PASADA CON FLUJO POR SLOT =========
-    // índice de grupos por (shift|day|start)
-    const groupsByKey = new Map<string, typeof scheduledGroups>();
+    // ========= 4) ASIGNACIÓN CON RESTRICCIONES POR ALUMNO (multi-pasada) =========
+    // Índice de grupos por (shift|day|start)
+    const groupsByKey = new Map<string, ScheduledGroup[]>();
     for (const g of scheduledGroups) {
       const key = `${g.shift}|${g.meeting.day}|${g.meeting.start}`;
       if (!groupsByKey.has(key)) groupsByKey.set(key, []);
       groupsByKey.get(key)!.push(g);
     }
 
-    // capacidad remanente de cada grupo
+    // Capacidad remanente por grupo
     const remCap = new Map<string, number>();
     for (const g of scheduledGroups) remCap.set(g.ephemeral_id, g.capacity);
 
-    // flujo (Dinic) — mismo que ya tenías
+    // Estado acumulado para respetar restricciones globales:
+    // - total por alumno <= maxCoursesPerStudent
+    // - no repetir curso por alumno
+    // - no asignar dos clases al mismo tiempo
+    // - “sin descansos” (contiguidad) si allow_breaks=false
+    const assignedCount = new Map<string, number>();                 // alumno -> total asignado
+    const assignedCourses = new Map<string, Set<string>>();          // alumno -> set(curso_id)
+    const assignedSlotsByDay = new Map<string, Map<number, Set<number>>>(); // key alumno|turno -> (day -> set(slot_index))
+
+    // Utilidades flujo (Dinic)
     type Edge = { to: number; rev: number; cap: number };
-    function makeGraph(n: number) {
-      const g: Edge[][] = Array.from({ length: n }, () => []);
-      return g;
-    }
+    function makeGraph(n: number) { return Array.from({ length: n }, () => [] as Edge[]); }
     function addEdge(g: Edge[][], u: number, v: number, cap: number) {
       const a: Edge = { to: v, rev: g[v].length, cap };
       const b: Edge = { to: u, rev: g[u].length, cap: 0 };
       g[u].push(a); g[v].push(b);
     }
     function bfs(g: Edge[][], s: number, t: number, level: number[]) {
-      level.fill(-1);
-      const q: number[] = [];
-      level[s] = 0; q.push(s);
+      level.fill(-1); const q: number[] = []; level[s] = 0; q.push(s);
       while (q.length) {
         const u = q.shift()!;
-        for (const e of g[u]) if (e.cap > 0 && level[e.to] < 0) {
-          level[e.to] = level[u] + 1; q.push(e.to);
-        }
+        for (const e of g[u]) if (e.cap > 0 && level[e.to] < 0) { level[e.to] = level[u] + 1; q.push(e.to); }
       }
       return level[t] >= 0;
     }
@@ -275,40 +279,18 @@ export async function POST() {
         const e = g[u][i];
         if (e.cap > 0 && level[u] < level[e.to]) {
           const d = dfs(g, e.to, t, Math.min(f, e.cap), level, it);
-          if (d > 0) {
-            e.cap -= d;
-            g[e.to][e.rev].cap += d;
-            return d;
-          }
+          if (d > 0) { e.cap -= d; g[e.to][e.rev].cap += d; return d; }
         }
       }
       return 0;
     }
     function dinic(g: Edge[][], s: number, t: number) {
-      let flow = 0;
-      const n = g.length;
-      const level = new Array(n).fill(-1);
-      const it = new Array(n).fill(0);
-      while (bfs(g, s, t, level)) {
-        it.fill(0);
-        let f: number;
-        while ((f = dfs(g, s, t, Infinity, level, it)) > 0) flow += f;
-      }
+      let flow = 0; const n = g.length; const level = new Array(n).fill(-1); const it = new Array(n).fill(0);
+      while (bfs(g, s, t, level)) { it.fill(0); let f: number; while ((f = dfs(g, s, t, Infinity, level, it)) > 0) flow += f; }
       return flow;
     }
 
-    // Construcción de slots y alumnos ordenados por “difíciles de asignar” (pocas elegibilidades)
-    const proposed: Array<{
-      student_id: string;
-      course_id: string;
-      group_ephemeral_id: string;
-      shift: Shift;
-      day: number;
-      start: number;
-      end: number;
-    }> = [];
-
-    // alumnos por turno (menos elegibles primero)
+    // Orden de alumnos por “difíciles de asignar” (menos elegibles primero)
     const studentsByShift: Record<Shift, string[]> = { matutino: [], vespertino: [], sabatino: [], dominical: [] };
     for (const sid of Array.from(eligByStudent.keys())) {
       const sh = (studentShift.get(sid) || "matutino") as Shift;
@@ -318,9 +300,15 @@ export async function POST() {
       studentsByShift[sh].sort((a, b) => (eligByStudent.get(a)?.size || 0) - (eligByStudent.get(b)?.size || 0));
     }
 
-    // slots cronológicos (asc y desc)
-    const slotsAsc: Array<{ shift: Shift; day: number; start: number }> = [];
-    for (const sh of SHIFTS) for (const s of timeSlotsByShift[sh]) slotsAsc.push({ shift: sh, day: s.day, start: s.start });
+    const proposed: Array<{
+      student_id: string; course_id: string; group_ephemeral_id: string;
+      shift: Shift; day: number; start: number; end: number;
+    }> = [];
+
+    const slotsAsc: Array<{ shift: Shift; day: number; start: number; index: number }> = [];
+    for (const sh of SHIFTS) {
+      for (const s of timeSlotsByShift[sh]) slotsAsc.push({ shift: sh, day: s.day, start: s.start, index: s.index });
+    }
     slotsAsc.sort(
       (a, b) =>
         (a.shift === b.shift ? 0 : SHIFTS.indexOf(a.shift) - SHIFTS.indexOf(b.shift)) ||
@@ -331,85 +319,135 @@ export async function POST() {
 
     const runPass = (orderedSlots: typeof slotsAsc) => {
       for (const slot of orderedSlots) {
-        const k = `${slot.shift}|${slot.day}|${slot.start}`;
-        const groupsHere = (groupsByKey.get(k) || []).filter(g => (remCap.get(g.ephemeral_id) || 0) > 0);
+        const key = `${slot.shift}|${slot.day}|${slot.start}`;
+        const groupsHere = (groupsByKey.get(key) || []).filter(g => (remCap.get(g.ephemeral_id) || 0) > 0);
         if (groupsHere.length === 0) continue;
 
         const allowBreaks = allowBreaksByShift[slot.shift];
-        const studentIds = studentsByShift[slot.shift];
+        const studentIds  = studentsByShift[slot.shift];
 
-        // Construir grafo por slot
-        const N = 1 + studentIds.length + groupsHere.length + 1;
-        const SRC = 0, SNK = N - 1;
-        const g = makeGraph(N);
-
+        // Construir grafo para ESTE slot —> restricción “una clase máx por alumno en este horario”
+        // SRC -> alumno (cap = min(1, rem_global))
+        // alumno -> grupo (si elegible y sin repetir curso, y cumpliendo “breaks”)
+        // grupo -> SNK (cap = cupo remanente)
         const studentIndex = new Map<string, number>();
-        const groupIndex = new Map<string, number>();
+        const groupIndex   = new Map<string, number>();
 
-        // S -> estudiantes
-        let idx = 1;
+        let N = 2; // SRC=0, SNK=N-1 (definimos al final)
         for (const sid of studentIds) {
-          addEdge(g, SRC, idx, Math.max(1, maxCoursesPerStudent));
-          studentIndex.set(sid, idx++);
+          const assigned = assignedCount.get(sid) || 0;
+          if (assigned >= maxCoursesPerStudent) continue; // no más clases que su límite
+
+          // si ya tiene algo en este mismo slot (por pasadas previas), no lo metemos
+          const dayMap = assignedSlotsByDay.get(`${sid}|${slot.shift}`);
+          if (dayMap && dayMap.get(slot.day)?.has(slot.index)) continue;
+
+          studentIndex.set(sid, N++);
+        }
+        for (const gr of groupsHere) groupIndex.set(gr.ephemeral_id, N++);
+
+        const SRC = 0, SNK = N;
+        const g = makeGraph(SNK + 1);
+
+        // S -> alumnos (capacidad 1 por slot para prohibir 2 clases al mismo tiempo)
+        for (const [sid, idx] of studentIndex) {
+          const remaining = Math.max(0, maxCoursesPerStudent - (assignedCount.get(sid) || 0));
+          if (remaining <= 0) continue;
+          addEdge(g, SRC, idx, 1); // *** CLAVE: 1 por slot ***
         }
 
         // grupos -> T
-        for (const gr of groupsHere) {
-          addEdge(g, idx, SNK, Math.max(0, (remCap.get(gr.ephemeral_id) || 0)));
-          groupIndex.set(gr.ephemeral_id, idx++);
+        for (const [gid, gi] of groupIndex) {
+          addEdge(g, gi, SNK, Math.max(0, (remCap.get(gid) || 0)));
         }
 
-        // estudiantes -> grupos (si elegible)
-        for (const sid of studentIds) {
-          const li = studentIndex.get(sid)!;
+        // alumnos -> grupos (elegible + sin curso repetido + regla de “breaks” si aplica)
+        for (const [sid, li] of studentIndex) {
           const eligs = eligByStudent.get(sid) || new Set<string>();
+          const already = assignedCourses.get(sid) || new Set<string>();
+          const dayMap  = assignedSlotsByDay.get(`${sid}|${slot.shift}`) || new Map<number, Set<number>>();
+
           for (const gr of groupsHere) {
-            if (!eligs.has(gr.course_id)) continue;
-            // si no se permiten "breaks", puedes filtrar por contigüidad/espaciado de horarios (omitido aquí para simpleza)
+            const courseId = gr.course_id;
+
+            // Debe ser elegible y no repetir curso
+            if (!eligs.has(courseId)) continue;
+            if (already.has(courseId)) continue;
+
+            // “Sin descansos” = contiguidad por día (si allowBreaks=false)
+            if (!allowBreaks) {
+              const set = dayMap.get(slot.day) || new Set<number>();
+              if (set.size > 0) {
+                const minIdx = Math.min(...Array.from(set.values()));
+                const maxIdx = Math.max(...Array.from(set.values()));
+                const isAdjacent = slot.index === minIdx - 1 || slot.index === maxIdx + 1 || set.has(slot.index);
+                if (!isAdjacent) continue; // al forzar contigüidad, evitamos huecos
+              }
+            }
+
             const gi = groupIndex.get(gr.ephemeral_id)!;
             addEdge(g, li, gi, 1);
           }
         }
 
-        // max flow
+        // Max-flow en este slot
         dinic(g, SRC, SNK);
 
-        // Recuperar matches (aristas saturadas estudiante->grupo)
-        for (const [sid, li] of studentIndex.entries()) {
-          for (const e of (g[li] || [])) {
-            if (e.to === 0) continue;
+        // Recuperar matches (alumno->grupo saturados)
+        const newlyAssigned: Array<{ sid: string; gid: string }> = [];
+        for (const [sid, li] of studentIndex) {
+          for (const e of g[li]) {
             const gi = e.to;
-            // arista original tenía cap=1; si en residual hay cap=0 => se usó
-            const pairEdge = g[gi][e.rev];
-            if (pairEdge.cap > 0) continue; // no usado
-            // encontrar grupo por índice
-            for (const [gid, gidx] of groupIndex.entries()) {
-              if (gidx === gi) {
-                proposed.push({
-                  student_id: sid,
-                  course_id: scheduledGroups.find(x => x.ephemeral_id === gid)!.course_id,
-                  group_ephemeral_id: gid,
-                  shift: scheduledGroups.find(x => x.ephemeral_id === gid)!.shift,
-                  day: scheduledGroups.find(x => x.ephemeral_id === gid)!.meeting.day,
-                  start: scheduledGroups.find(x => x.ephemeral_id === gid)!.meeting.start,
-                  end: scheduledGroups.find(x => x.ephemeral_id === gid)!.meeting.end,
-                });
-                remCap.set(gid, Math.max(0, (remCap.get(gid) || 0) - 1));
-                break;
-              }
+            // arista usada si el residual en la inversa aumentó (cap>0 en back-edge)
+            if (gi === SRC || gi === SNK) continue;
+            const back = g[gi][e.rev];
+            if (back.cap <= 0) continue; // no se usó
+            // localizar grupo por índice
+            for (const [gid, idx] of groupIndex) {
+              if (idx === gi) newlyAssigned.push({ sid, gid });
             }
           }
+        }
+
+        // Aplicar asignaciones y actualizar estados globales
+        for (const a of newlyAssigned) {
+          const ginfo = groupsHere.find(x => x.ephemeral_id === a.gid)!;
+          const sid   = a.sid;
+
+          proposed.push({
+            student_id: sid,
+            course_id: ginfo.course_id,
+            group_ephemeral_id: ginfo.ephemeral_id,
+            shift: ginfo.shift,
+            day: ginfo.meeting.day,
+            start: ginfo.meeting.start,
+            end: ginfo.meeting.end,
+          });
+
+          // bajar cupo del grupo
+          remCap.set(ginfo.ephemeral_id, Math.max(0, (remCap.get(ginfo.ephemeral_id) || 0) - 1));
+
+          // actualizar totales alumno
+          assignedCount.set(sid, (assignedCount.get(sid) || 0) + 1);
+          if (!assignedCourses.has(sid)) assignedCourses.set(sid, new Set());
+          assignedCourses.get(sid)!.add(ginfo.course_id);
+
+          const k = `${sid}|${slot.shift}`;
+          if (!assignedSlotsByDay.has(k)) assignedSlotsByDay.set(k, new Map());
+          const map = assignedSlotsByDay.get(k)!;
+          if (!map.has(slot.day)) map.set(slot.day, new Set());
+          map.get(slot.day)!.add(slot.index);
         }
       }
     };
 
-    // múltiples pasadas asc/desc
+    // Varias pasadas (llenado más robusto sin violar restricciones)
     for (let k = 0; k < assignmentPasses; k++) {
       if (k % 2 === 0) runPass(slotsAsc);
       else runPass(slotsDesc);
     }
 
-    // ========= 5) SALIDAS =========
+    // ========= 5) SALIDA =========
     const courseById = new Map(coursesArr.map((c) => [c.id, c]));
 
     const groupsUsage = scheduledGroups.map((g) => {
@@ -431,33 +469,7 @@ export async function POST() {
       };
     });
 
-    const assignedCount = new Map<string, number>();
-    for (const a of proposed) assignedCount.set(a.student_id, (assignedCount.get(a.student_id) || 0) + 1);
-
-    const studentsIdsSet = new Set(eligByStudent.keys());
-    const unassigned: string[] = [];
-    for (const sid of studentsIdsSet) {
-      if ((assignedCount.get(sid) || 0) <= 0) unassigned.push(sid);
-    }
-
-    // por curso: cuántos quedaron fuera en total (aprox)
-    const unassignedByCourse: Array<{ course_code: string; turno: Shift; count: number }> = [];
-    for (const [cid, per] of demandByCourseShift.entries()) {
-      for (const sh of SHIFTS) {
-        const demand = per[sh] || 0;
-        const sched = scheduledCapacityByCourseShift.get(cid)![sh] || 0;
-        const gap = Math.max(0, demand - sched);
-        if (gap > 0) {
-          unassignedByCourse.push({
-            course_code: courseById.get(cid)?.code || "",
-            turno: sh,
-            count: gap,
-          });
-        }
-      }
-    }
-
-    // resumen de alumnos
+    // Resumen de alumnos
     const studentsOverview = (students ?? []).map((s: any) => ({
       id: s.id as string,
       name: (s.name ?? null) as string | null,
@@ -465,7 +477,6 @@ export async function POST() {
       assigned: assignedCount.get(s.id) || 0,
     }));
 
-    // detalle de asignaciones
     const assignmentsDetailed = proposed.map((a) => {
       const g = scheduledGroups.find((x) => x.ephemeral_id === a.group_ephemeral_id)!;
       return {
@@ -480,6 +491,23 @@ export async function POST() {
       };
     });
 
+    // Unassigned aprox por curso (demanda vs capacidad programada), útil para afinar settings
+    const unassignedByCourse: Array<{ course_code: string; turno: Shift; count: number }> = [];
+    for (const [cid, per] of demandByCourseShift.entries()) {
+      for (const sh of SHIFTS) {
+        const demand = per[sh] || 0;
+        const sched  = scheduledCapacityByCourseShift.get(cid)![sh] || 0;
+        const gap    = Math.max(0, demand - sched);
+        if (gap > 0) {
+          unassignedByCourse.push({
+            course_code: courseById.get(cid)?.code || "",
+            turno: sh,
+            count: gap,
+          });
+        }
+      }
+    }
+
     return NextResponse.json({
       ok: true,
       params: {
@@ -493,11 +521,10 @@ export async function POST() {
         total_courses: coursesArr.length,
         total_groups: scheduledGroups.length,
       },
-      unassigned_students: unassigned.length,
       unassigned_by_course: unassignedByCourse,
-      scheduled_groups: groupsUsage,            // para pestaña "Materias" y ocupación por salón
-      students_overview: studentsOverview,      // para pestaña "Alumnos"
-      assignments_detailed: assignmentsDetailed,// para pestaña "Horarios"
+      scheduled_groups: groupsUsage,            // pestaña "Materias" y ocupación por salón
+      students_overview: studentsOverview,      // pestaña "Alumnos"
+      assignments_detailed: assignmentsDetailed,// pestaña "Horarios"
       students_catalog: (students ?? []).map((s: any) => ({
         id: s.id as string,
         name: (s.name ?? null) as string | null,
